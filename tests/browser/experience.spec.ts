@@ -132,7 +132,7 @@ test('renders the rainy refuge and supports motion, sound and immersion', async 
   expect(errors).toEqual([]);
 });
 
-test('previews settings, updates procedural rendering and releases resources', async ({ page }, testInfo) => {
+test('previews settings by keyboard, updates procedural rendering and releases resources', async ({ page }, testInfo) => {
   const errors: string[] = [];
   const requests: { url: string; type: string }[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
@@ -141,12 +141,18 @@ test('previews settings, updates procedural rendering and releases resources', a
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.goto('/?debug=1&seed=qa-rainfire');
   await expect(page.locator('#app')).toHaveAttribute('data-ready', 'true');
-  // Begin normal playback through visitor controls, then freeze scene rendering
-  // in settings while keeping its sound available for a volume preview.
+  // Exercise native keyboard activation here; the first scenario covers pointer
+  // activation of the same controls. This also avoids making keyboard access
+  // depend on Playwright's two compositor-frame mouse-stability check while a
+  // software GPU is still finishing the first frame. Keep the 15 s action limit.
+  // Begin playback, then freeze rendering in settings while retaining sound.
   await page.emulateMedia({ reducedMotion: 'no-preference' });
-  await page.getByRole('button', { name: '起风', exact: true }).click();
-  await page.getByRole('button', { name: '听雨', exact: true }).click();
-  await page.getByRole('button', { name: '设置', exact: true }).click();
+  for (const name of ['起风', '听雨', '设置']) {
+    const button = page.getByRole('button', { name, exact: true });
+    await expect(button).toBeVisible();
+    await expect(button).toBeEnabled();
+    await button.press('Enter');
+  }
   await expect(page.locator('#settings-dialog')).toBeVisible();
   await expect.poll(async () => (await state(page)).audioState).toBe('playing');
   await page.getByRole('slider', { name: '声音音量', exact: true }).press('Home');
@@ -232,6 +238,10 @@ test('previews settings, updates procedural rendering and releases resources', a
 });
 
 test('starts still for reduced motion and recovers from WebGL context loss', async ({ page }, testInfo) => {
+  // This case rebuilds the world twice, changes rendering quality, then reads
+  // back two complete images. Budget that multi-stage software-GPU workload
+  // separately; individual input, recovery and pixel-readback limits remain.
+  test.setTimeout(180_000);
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
