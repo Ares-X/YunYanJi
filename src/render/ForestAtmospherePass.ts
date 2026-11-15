@@ -6,6 +6,7 @@ import type { DirectionalLight, PerspectiveCamera, PointLight, Texture, WebGLRen
 import { FullScreenQuad, Pass } from 'three/addons/postprocessing/Pass.js';
 import type { EnvironmentSnapshot, QualityLevel } from '../core/types';
 import type { SceneDepthField } from './SurfaceOcclusion';
+import { weatherLighting } from './weatherLighting';
 
 const STEPS = { low: 10, medium: 18, high: 28 } as const;
 function createMistNoise():Data3DTexture {
@@ -35,7 +36,7 @@ const volumeFragment = /* glsl */ `
   uniform mat4 uInverseProjection, uCameraWorld, uCanopyMatrix, uSunMatrix;
   uniform vec3 uCamera, uSunDirection, uSunColor, uFirePosition, uFireColor, uHaze;
   uniform vec2 uWind;
-  uniform float uTime, uRain, uSteps, uNear, uFar, uFireIntensity;
+  uniform float uTime, uRain, uDensity, uFlash, uSteps, uNear, uFar, uFireIntensity;
   #ifdef MIST_SHADOWS
     uniform highp sampler2DShadow tSunShadow;
     uniform highp samplerCubeShadow tFireShadow;
@@ -104,10 +105,10 @@ const volumeFragment = /* glsl */ `
       float pockets=smoothstep(.22,.75,broad*.74+filaments*.26);
       float nearClear=smoothstep(1.5,8.0,t);
       float density=(.0065+groundLayer*(.009+.024*pockets))
-        *(.72+.38*uRain)*mix(.40,1.0,nearClear);
+        *uDensity*mix(.40,1.0,nearClear);
       float sky=canopy(p);
       float sun=sunlight(p);
-      vec3 incident=uHaze*(.40+.24*sky)
+      vec3 incident=uHaze*(.40+.24*sky) + vec3(.38,.48,.67)*uFlash
         +uSunColor*(.04+.20*sky)*sun*phase;
       vec3 toFire=uFirePosition-p;
       float radius2=dot(toFire,toFire);
@@ -192,6 +193,10 @@ export class ForestAtmospherePass extends Pass {
   private readonly sunTarget=new Vector3();
   private readonly fire:PointLight|undefined;
   private hasShadows=false;
+  private readonly rainHaze=new Color('#425b66');
+  private readonly clearHaze=new Color('#afc4c5');
+  private readonly snowHaze=new Color('#a0b2bf');
+  private readonly stormHaze=new Color('#3c4b5d');
 
   constructor(camera:PerspectiveCamera,private readonly sun:DirectionalLight,
     private readonly fireLights:readonly PointLight[],canopyTexture:Texture,canopyMatrix:Matrix4,
@@ -210,7 +215,7 @@ export class ForestAtmospherePass extends Pass {
         uCamera:{value:camera.position},uSunDirection:{value:new Vector3()},
         uSunColor:{value:new Color()},uHaze:{value:new Color('#425b66')},
         uFirePosition:{value:this.fireWorld},uFireColor:{value:new Color()},uFireIntensity:{value:0},
-        uWind:{value:new Vector2()},uTime:{value:0},uRain:{value:.72},uSteps:{value:STEPS[quality]},
+        uWind:{value:new Vector2()},uTime:{value:0},uRain:{value:.72},uDensity:{value:1},uFlash:{value:0},uSteps:{value:STEPS[quality]},
         uNear:{value:camera.near},uFar:{value:camera.far},
       },
     });
@@ -230,7 +235,13 @@ export class ForestAtmospherePass extends Pass {
 
   update(frame:EnvironmentSnapshot):void {
     this.volume.uniforms.uTime!.value=frame.elapsed;
-    this.volume.uniforms.uRain!.value=frame.precipitation;
+    this.volume.uniforms.uRain!.value=frame.weather.rain;
+    const light=weatherLighting(frame.weather,frame.lightning?.flash??0);
+    this.volume.uniforms.uDensity!.value=light.mist;
+    this.volume.uniforms.uFlash!.value=frame.lightning?.flash??0;
+    (this.volume.uniforms.uHaze!.value as Color).copy(this.rainHaze)
+      .lerp(this.clearHaze,light.clearing).lerp(this.snowHaze,frame.weather.snow*.65)
+      .lerp(this.stormHaze,frame.weather.storm);
     (this.volume.uniforms.uWind!.value as Vector2).set(frame.wind.x,frame.wind.z);
   }
 
@@ -294,7 +305,7 @@ export class ForestAtmospherePass extends Pass {
 
   invalidate():void {this.target.dispose();this.temporary.dispose();this.noise.needsUpdate=true;}
   diagnostics():Record<string,number> {
-    return {mistSteps:STEPS[this.quality],mistWidth:this.target.width,mistHeight:this.target.height};
+    return {mistDensity:Number(this.volume.uniforms.uDensity!.value),mistSteps:STEPS[this.quality],mistWidth:this.target.width,mistHeight:this.target.height};
   }
   override dispose():void {
     this.target.dispose();this.temporary.dispose();this.noise.dispose();

@@ -188,6 +188,7 @@ export function createWetGround(seed: string, quality: QualityLevel, height: (x:
   const cameraWorld=new Matrix4(),projection=new Matrix4(),waterWorld=new Matrix4();
   let capturedCamera:Camera|undefined;
   let elapsed=0,lastCapture=-Infinity,lastRain=NaN,dirty=true,disposed=false;
+  let weatherRevision=-1,fireRevision=-1,lastFlash=0;
   const drawReflection=mesh.onBeforeRender;
   mesh.onBeforeRender=(renderer,scene,camera,geometry,drawMaterial,group)=>{
     if(disposed)return;
@@ -207,12 +208,15 @@ export function createWetGround(seed: string, quality: QualityLevel, height: (x:
       if(disposed)return;
       // A paused frame must capture its exact fire/foliage state once. Otherwise
       // context restoration could replace a stale 8 Hz reflection with time T.
-      if(frame.elapsed<elapsed||frame.precipitation!==lastRain
+      if(frame.elapsed<elapsed||(frame.delta===0&&frame.weather.rain!==lastRain)
+        ||frame.weather.revision!==weatherRevision||frame.fire.revision!==fireRevision
+        ||(frame.lightning?.flash??0)!==lastFlash
         ||(frame.delta===0&&frame.elapsed!==lastCapture))invalidate();
-      elapsed=frame.elapsed;lastRain=frame.precipitation;
+      elapsed=frame.elapsed;lastRain=frame.weather.rain;
+      weatherRevision=frame.weather.revision;fireRevision=frame.fire.revision;lastFlash=frame.lightning?.flash??0;
       material.uniforms.uTime!.value=elapsed;
       material.uniforms.uWind!.value=Math.max(0,Math.min(1,frame.wind.strength));
-      material.uniforms.uRain!.value=frame.precipitation;
+      material.uniforms.uRain!.value=frame.weather.rain;
     },
     setQuality(next):void {
       if(disposed)return;

@@ -5,8 +5,10 @@ import { createForestWind } from '../../src/scenes/rainfire/forestWind';
 import { buildLivingForest } from '../../src/scenes/rainfire/livingForest';
 import { createRainHeight } from '../../src/scenes/rainfire/rainLandscape';
 import type { EnvironmentSnapshot } from '../../src/core/types';
+import { WeatherSimulation } from '../../src/core/WeatherSimulation';
 
 const frame = (elapsed: number, reducedMotion = false): EnvironmentSnapshot => ({
+  ...new WeatherSimulation('forest-wind-test').snapshot(),
   elapsed, delta: .016, wind: { x: .8, y: .2, z: -.3, strength: .6 },
   precipitation: .8, gust: .4, reducedMotion,
 });

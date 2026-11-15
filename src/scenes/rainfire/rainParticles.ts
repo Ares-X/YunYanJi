@@ -6,6 +6,7 @@ import type { Vector3 } from 'three';
 import { createRandom, randomBetween } from '../../core/random';
 import type { EnvironmentSnapshot, QualityLevel } from '../../core/types';
 import { createRainHeight, PUDDLE_LEVEL, SHELTER } from './rainLandscape';
+import { createWeatherSnow } from './weatherSnow';
 
 const COUNTS: Record<QualityLevel, number> = { low: 5500, medium: 11000, high: 18000 };
 const SPLASH_COUNTS: Record<QualityLevel, number> = { low: 96, medium: 180, high: 300 };
@@ -41,6 +42,7 @@ function createGroundSplashes(seed: string, quality: QualityLevel, firePosition:
     uniforms: UniformsUtils.merge([UniformsLib.fog, {
       uTime: { value: 0 }, uRain: { value: 0.72 }, uViewportHeight: { value: 1 },
       uFirePosition: { value: firePosition.clone() }, uWind: { value: new Vector2() },
+      uFire: { value: 1 }, uSky: { value: .25 }, uFlash: { value: 0 },
     }]),
     vertexShader: /* glsl */ `
       uniform float uTime, uRain, uViewportHeight;
@@ -68,6 +70,7 @@ function createGroundSplashes(seed: string, quality: QualityLevel, firePosition:
     `,
     fragmentShader: /* glsl */ `
       uniform vec3 uFirePosition;
+      uniform float uFire, uSky, uFlash;
       varying float vSplashAlpha, vSplashDepth;
       varying vec3 vSplashWorld;
       #include <fog_pars_fragment>
@@ -83,7 +86,8 @@ function createGroundSplashes(seed: string, quality: QualityLevel, firePosition:
         #endif
         if (alpha < 0.003) discard;
         float warmth = exp(-length(vSplashWorld - uFirePosition) * 0.43);
-        vec3 light = vec3(0.50, 0.61, 0.67) + vec3(1.9, 0.67, 0.15) * warmth;
+        vec3 light = vec3(0.50, 0.61, 0.67) * (.7 + uSky) + vec3(1.9, 0.67, 0.15) * warmth * uFire
+          + vec3(.5,.6,.8) * uFlash;
         gl_FragColor = vec4(light, alpha);
         #include <tonemapping_fragment>
         #include <colorspace_fragment>
@@ -101,7 +105,11 @@ function createGroundSplashes(seed: string, quality: QualityLevel, firePosition:
     points,
     update(frame: EnvironmentSnapshot): void {
       material.uniforms.uTime!.value = frame.elapsed;
-      material.uniforms.uRain!.value = Math.max(0, Math.min(1, frame.precipitation));
+      material.uniforms.uRain!.value = Math.max(0, Math.min(1, frame.weather.rain));
+      material.uniforms.uFire!.value = frame.fire.flame * 1.45 + frame.fire.embers * .06;
+      material.uniforms.uSky!.value = frame.weather.daylight;
+      material.uniforms.uFlash!.value = frame.lightning?.flash ?? 0;
+      points.visible = frame.weather.rain > .001;
       (material.uniforms.uWind!.value as Vector2).set(frame.wind.x, frame.wind.z);
     },
     setQuality(next: QualityLevel): void { geometry.setDrawRange(0, SPLASH_COUNTS[next]); },
@@ -109,7 +117,7 @@ function createGroundSplashes(seed: string, quality: QualityLevel, firePosition:
 }
 
 const vertexShader = /* glsl */ `
-  uniform float uTime, uViewportHeight;
+  uniform float uTime, uViewportHeight, uFall, uStreak;
   uniform vec2 uAdvection, uWind;
   attribute vec3 aOrigin;
   attribute vec4 aField;
@@ -121,9 +129,9 @@ const vertexShader = /* glsl */ `
     vec3 centre = aOrigin;
     centre.x = mod(centre.x + uAdvection.x + aField.x * 0.5, aField.x) - aField.x * 0.5;
     centre.z = mod(centre.z + uAdvection.y - aField.w, aField.y) + aField.w;
-    centre.y = mod(centre.y - uTime * aSpeed * 10.5 + aField.z, aField.z);
+    centre.y = mod(centre.y - uFall * aSpeed * 10.5 + aField.z, aField.z);
     vec3 direction = normalize(vec3(uWind.x * 0.19, -1.0, uWind.y * 0.19));
-    vec3 end = centre + direction * aLength;
+    vec3 end = centre + direction * aLength * uStreak;
     vec4 viewStart = modelViewMatrix * vec4(centre, 1.0);
     vec4 viewEnd = modelViewMatrix * vec4(end, 1.0);
     vec4 viewPoint = mix(viewStart, viewEnd, uv.y);
@@ -142,7 +150,7 @@ const vertexShader = /* glsl */ `
 `;
 
 const fragmentShader = /* glsl */ `
-  uniform float uTime, uIntensity;
+  uniform float uTime, uIntensity, uFire, uSky, uFlash;
   uniform vec4 uShelter;
   uniform vec3 uFirePosition;
   varying vec2 vRainUv;
@@ -161,8 +169,9 @@ const fragmentShader = /* glsl */ `
     float ends = smoothstep(0.0, 0.12, vRainUv.y)
       * (1.0 - smoothstep(0.68, 1.0, vRainUv.y));
     float illumination = exp(-length(vRainWorld - uFirePosition) * 0.57)
-      * (0.89 + 0.11 * sin(uTime * 5.7));
-    vec3 rainColor = vec3(0.42, 0.52, 0.56) + vec3(1.45, 0.48, 0.10) * illumination;
+      * uFire;
+    vec3 rainColor = vec3(0.42, 0.52, 0.56) * (.72 + uSky)
+      + vec3(1.45, 0.48, 0.10) * illumination + vec3(.5,.6,.8) * uFlash;
     float alpha = sides * ends * vRainCoverage * uIntensity * (0.24 + illumination * 0.12);
     #ifdef USE_FOG
       #ifdef FOG_EXP2
@@ -193,7 +202,8 @@ export function createRainParticles(seed: string, quality: QualityLevel, firePos
   const group = new Group();
   group.name = 'rain-outside-the-shelter';
   const splashes = createGroundSplashes(seed, quality, firePosition);
-  group.add(splashes.points);
+  const snow = createWeatherSnow(seed, quality, firePosition);
+  group.add(splashes.points, snow.points);
   const random = createRandom(`${seed}/rain-streaks`);
   const origin = new Float32Array(COUNTS.high * 3);
   const field = new Float32Array(COUNTS.high * 4);
@@ -229,6 +239,8 @@ export function createRainParticles(seed: string, quality: QualityLevel, firePos
     name: 'generated-world-rain-streaks', transparent: true, depthWrite: false, depthTest: true, fog: true, side: DoubleSide,
     uniforms: UniformsUtils.merge([UniformsLib.fog, {
       uTime: { value: 0 }, uViewportHeight: { value: 1 }, uIntensity: { value: 0.72 },
+      uFall: { value: 0 }, uStreak: { value: 1 },
+      uFire: { value: 1 }, uSky: { value: .25 }, uFlash: { value: 0 },
       uAdvection: { value: advection }, uWind: { value: wind },
       uShelter: { value: SHELTER }, uFirePosition: { value: firePosition.clone() },
     }]),
@@ -246,22 +258,34 @@ export function createRainParticles(seed: string, quality: QualityLevel, firePos
     renderer.getDrawingBufferSize(drawingSize);
     material.uniforms.uViewportHeight!.value = renderer.getRenderTarget()?.height ?? drawingSize.y;
   };
-  let lastElapsed = 0;
+  let lastElapsed = 0, fall = 0, currentQuality = quality;
   return {
     group,
     update(frame): void {
-      if (frame.elapsed < lastElapsed) advection.set(0, 0);
+      if (frame.elapsed < lastElapsed) { advection.set(0, 0); fall = 0; }
       lastElapsed = frame.elapsed;
       advection.x += frame.wind.x * frame.delta * 2.5;
       advection.y += frame.wind.z * frame.delta * 2.5;
       wind.set(frame.wind.x, frame.wind.z);
       material.uniforms.uTime!.value = frame.elapsed;
-      material.uniforms.uIntensity!.value = Math.max(0, Math.min(1, frame.precipitation));
+      const rain = Math.max(0, Math.min(1, frame.weather.rain));
+      geometry.instanceCount = Math.round(COUNTS[currentQuality] * rain ** 1.10);
+      mesh.visible = rain > .001;
+      material.uniforms.uIntensity!.value = Math.sqrt(rain);
+      fall += frame.delta * (.72 + Math.sqrt(rain) * .38 + frame.weather.storm * .15);
+      material.uniforms.uFall!.value = fall;
+      material.uniforms.uStreak!.value = .65 + rain * .55;
+      material.uniforms.uFire!.value = frame.fire.flame * 1.45 + frame.fire.embers * .06;
+      material.uniforms.uSky!.value = frame.weather.daylight;
+      material.uniforms.uFlash!.value = frame.lightning?.flash ?? 0;
       splashes.update(frame);
+      snow.update(frame);
     },
     setQuality(next): void {
+      currentQuality = next;
       geometry.instanceCount = COUNTS[next];
       splashes.setQuality(next);
+      snow.setQuality(next);
     },
   };
 }

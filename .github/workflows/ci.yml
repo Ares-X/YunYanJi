@@ -28,7 +28,9 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Eight software-rendered browser cases plus their final review captures.
+    # Individual interaction and rendering timeouts remain separately bounded.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
