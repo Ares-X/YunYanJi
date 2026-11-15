@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { EnvironmentSnapshot } from '../../src/core/types';
 import { createRainfireVoicing } from '../../src/audio/rainfireVoicing';
+import { WeatherSimulation } from '../../src/core/WeatherSimulation';
 
 function frame(elapsed: number, strength = 0.3, gust = 0): EnvironmentSnapshot {
-  return { elapsed, delta: 1 / 60, wind: { x: 0.5, y: 0, z: 0.1, strength }, precipitation: 0.72, gust, reducedMotion: false };
+  return { ...new WeatherSimulation('audio-test').snapshot(), elapsed, delta: 1 / 60,
+    wind: { x: 0.5, y: 0, z: 0.1, strength }, gust };
 }
 
 describe('weather-driven sound detail', () => {
@@ -27,8 +29,9 @@ describe('weather-driven sound detail', () => {
 
   it('connects rain layers to precipitation while the sheltered fire keeps burning', () => {
     const voice = createRainfireVoicing('rainfire');
-    const dry = voice({ ...frame(8), precipitation: 0 });
-    const rainy = voice({ ...frame(8), precipitation: 1 });
+    const sample = frame(8);
+    const dry = voice({ ...sample, weather: { ...sample.weather, rain: 0 } });
+    const rainy = voice({ ...sample, weather: { ...sample.weather, rain: 1 } });
     for (const level of [dry.rainLeftGain, dry.rainRightGain, dry.dropGain, dry.roofGain]) expect(level).toBe(0);
     for (const level of [rainy.rainLeftGain, rainy.rainRightGain, rainy.dropGain, rainy.roofGain]) expect(level).toBeGreaterThan(0.07);
     expect(dry.fireGain).toBe(rainy.fireGain);
@@ -37,6 +40,23 @@ describe('weather-driven sound detail', () => {
     // Widely separated rain, narrower distant wind, and a close fixed hearth.
     expect(rainy.rainRightPan - rainy.rainLeftPan).toBeGreaterThan(1.2);
     expect(Math.abs(rainy.firePan)).toBeLessThan(0.2);
+  });
+
+  it('gives snow its own quiet texture and extinguishes combustion independently of weather', () => {
+    const voice = createRainfireVoicing('rainfire');
+    const sample = frame(8);
+    const snow = voice({ ...sample, weather: { ...sample.weather, mode: 'snow', rain: 0, snow: 0.8 } });
+    expect(snow.snowGain).toBeGreaterThan(0);
+    expect(snow.snowGain).toBeLessThan(0.08);
+    expect(snow.rainLeftGain + snow.rainRightGain + snow.dropGain + snow.roofGain).toBe(0);
+    const out = voice({ ...sample, fire: { ...sample.fire, state: 'out', heat: 0, flame: 0, embers: 0 } });
+    expect(out.fireGain).toBe(0);
+    expect(out.emberGain).toBe(0);
+    const bank = voice({ ...sample, fire: { ...sample.fire, state: 'embers', flame: 0, embers: 0.8 } });
+    expect(bank.fireGain).toBe(0);
+    expect(bank.emberGain).toBeGreaterThan(0);
+    expect(voice({ ...sample, fire: { ...sample.fire, flame: 1 } }).fireGain)
+      .toBeGreaterThan(voice({ ...sample, fire: { ...sample.fire, flame: 0.25 } }).fireGain * 3);
   });
 
   it('keeps amplitudes, pan and playback rate within restrained bounds', () => {

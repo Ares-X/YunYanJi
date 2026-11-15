@@ -29,6 +29,11 @@ export class ProceduralAmbience {
   get contextState(): AudioContextState | 'uninitialized' {
     return this.context?.state ?? 'uninitialized';
   }
+
+  diagnostics(): Record<string, number> {
+    return this.graph?.diagnostics() ?? { audioLoopSources: 0, audioTransientSources: 0,
+      audioNodes: 0, audioThunders: 0, audioWoodEvents: 0, audioPeakTransients: 0 };
+  }
   get state(): AmbienceState {
     if (this.disposed) return 'disposed';
     if (this.lastError) return 'unavailable';

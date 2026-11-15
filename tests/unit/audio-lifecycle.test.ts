@@ -4,7 +4,9 @@ import { createAmbienceGraph } from '../../src/audio/createAmbienceGraph';
 
 vi.mock('../../src/audio/createAmbienceGraph', () => ({
   createAmbienceGraph: vi.fn(() => ({
-    sourceCount: 8,
+    sourceCount: 9,
+    diagnostics: vi.fn(() => ({ audioLoopSources: 9, audioTransientSources: 0, audioNodes: 30,
+      audioThunders: 0, audioWoodEvents: 0, audioPeakTransients: 0 })),
     setActive: vi.fn(),
     setVolume: vi.fn(),
     update: vi.fn(),

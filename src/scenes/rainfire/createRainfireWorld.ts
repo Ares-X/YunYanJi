@@ -8,6 +8,7 @@ import { buildForestDebris } from './forestDebris';
 import { PUDDLE_LEVEL, SHELTER } from './rainLandscape';
 import { createRainParticles } from './rainParticles';
 import { createWetGround } from './wetGround';
+import { createSnowSurface } from './snowSurface';
 
 /** A sheltered seat beside a small fire, with an uninterrupted wet forest beyond. */
 export function createRainfireWorld(options: SceneOptions): LandscapeScene {
@@ -31,6 +32,7 @@ export function createRainfireWorld(options: SceneOptions): LandscapeScene {
   group.traverse(object => {
     if (object instanceof Mesh && object.castShadow && object.userData.fireShadow !== false) object.layers.enable(2);
   });
+  const snowSurface = createSnowSurface(group);
   let disposed = false;
   return {
     group,
@@ -39,7 +41,11 @@ export function createRainfireWorld(options: SceneOptions): LandscapeScene {
     movingCanopy: true,
     groundHeightAt: landscape.height,
     setSceneDepth: field => fire.setSceneDepth(field),
-    setEnvironmentCapture: enabled => forest.setEnvironmentCapture(enabled),
+    setEnvironmentCapture: enabled => {
+      forest.setEnvironmentCapture(enabled);
+      fire.setEnvironmentCapture(enabled);
+      snowSurface.setEnvironmentCapture(enabled);
+    },
     cameraPosition: new Vector3(1, landscape.height(1, 4.5) + 1.25, 4.5),
     cameraTarget: new Vector3(-.4, .95, -4),
     portraitCameraPosition: new Vector3(.30, landscape.height(.30, 4.4) + 1.28, 4.4),
@@ -49,6 +55,7 @@ export function createRainfireWorld(options: SceneOptions): LandscapeScene {
       reflectionUpdates: Number(water.mesh.userData.reflectionUpdates),
       reflectionSize: Number(water.mesh.userData.reflectionSize),
       generatedTrees: forest.treeCount,
+      ...fire.diagnostics(),
     }),
     update(frame: EnvironmentSnapshot): void {
       if (disposed) return;
@@ -56,6 +63,7 @@ export function createRainfireWorld(options: SceneOptions): LandscapeScene {
       fire.update(frame);
       rain.update(frame);
       water.update(frame);
+      snowSurface.update(frame);
     },
     setQuality(quality: QualityLevel): void {
       if (disposed) return;

@@ -1,7 +1,7 @@
 import {
   BackSide, BoxGeometry, BufferGeometry, Color, Float32BufferAttribute,
   Group, IcosahedronGeometry, Matrix4, Mesh, MeshStandardMaterial, PointLight, Points,
-  ShaderMaterial, UniformsLib, UniformsUtils, Vector2, Vector3,
+  ShaderMaterial, UniformsLib, UniformsUtils, Vector2, Vector3, Vector4,
 } from 'three';
 import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { createRandom, randomBetween } from '../../core/random';
@@ -116,6 +116,7 @@ function logGeometry(seed: string, length: number, radius: number): BufferGeomet
   geometry.setAttribute('position', new Float32BufferAttribute(positions, 3));
   geometry.setAttribute('aFuelRadius', new Float32BufferAttribute(radii, 1));
   geometry.setAttribute('aFuelIdentity', new Float32BufferAttribute(identities, 1));
+  geometry.setAttribute('aFuelSlot', new Float32BufferAttribute(new Float32Array(radii.length), 1));
   geometry.setIndex(indices);
   geometry.computeVertexNormals(); geometry.computeBoundingSphere();
   // Preserve each log's grain coordinates when the six pieces are combined.
@@ -124,27 +125,29 @@ function logGeometry(seed: string, length: number, radius: number): BufferGeomet
   return geometry;
 }
 
-function fuelMaterial(coalHeat: { value: number }): MeshStandardMaterial {
+function fuelMaterial(coalHeat: { value: number }, burn = { value: new Vector4(1, 1, 1, 1) }): MeshStandardMaterial {
   const material = new MeshStandardMaterial({
     color: '#574634', roughness: 0.94, emissive: '#ff4607', emissiveIntensity: 2.2, dithering: true,
   });
   material.name = 'generated-charred-split-firewood';
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uCoalHeat = coalHeat;
+    shader.uniforms.uFuelBurn = burn;
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>
-        attribute float aFuelRadius, aFuelIdentity;
+        attribute float aFuelRadius, aFuelIdentity, aFuelSlot;
         attribute vec3 aFuelPosition, aFuelNormal;
         varying vec3 vFuelPosition, vFuelNormal;
-        varying float vFuelRadius, vFuelIdentity;`)
+        varying float vFuelRadius, vFuelIdentity, vFuelSlot;`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>
         vFuelPosition = aFuelPosition; vFuelNormal = aFuelNormal;
-        vFuelRadius = aFuelRadius; vFuelIdentity = aFuelIdentity;`);
+        vFuelRadius = aFuelRadius; vFuelIdentity = aFuelIdentity; vFuelSlot = aFuelSlot;`);
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>
         varying vec3 vFuelPosition, vFuelNormal;
-        varying float vFuelRadius, vFuelIdentity;
+        varying float vFuelRadius, vFuelIdentity, vFuelSlot;
         uniform float uCoalHeat;
+        uniform vec4 uFuelBurn;
         ${NOISE}
         ${CHAR_PLATES}`)
       .replace('#include <color_fragment>', /* glsl */ `
@@ -152,8 +155,10 @@ function fuelMaterial(coalHeat: { value: number }): MeshStandardMaterial {
         vec3 p = vFuelPosition;
         float weather = fireNoise(p * vec3(2.3, 29.0, 29.0) + vFuelIdentity);
         float grain = fireNoise(p * vec3(4.2, 91.0, 91.0) + weather * 0.8 + vFuelIdentity);
+        float burn = vFuelSlot < .5 ? uFuelBurn.x : vFuelSlot < 1.5 ? uFuelBurn.y
+          : vFuelSlot < 2.5 ? uFuelBurn.z : uFuelBurn.w;
         float charred = (1.0 - smoothstep(0.10, 0.46, abs(p.x)))
-          * (0.57 + fireNoise(p * 16.0 + vFuelIdentity) * 0.43);
+          * (0.57 + fireNoise(p * 16.0 + vFuelIdentity) * 0.43) * burn;
         float exposed = smoothstep(vFuelRadius * 0.43, vFuelRadius * 0.55, p.y);
         float endFace = smoothstep(0.65, 0.93, abs(vFuelNormal.x));
         float ring = length(p.yz) * (120.0 + sin(atan(p.z, p.y) * 5.0) * 4.0)
@@ -175,7 +180,7 @@ function fuelMaterial(coalHeat: { value: number }): MeshStandardMaterial {
         float heat=smoothstep(.41,.72,fireNoise(p*vec3(8.0,17.0,17.0)+vFuelIdentity+21.3))
           *charred*(1.0-ash)*(.35+.65*(1.0-smoothstep(-.025,.065,p.y)));
         float fuelGlow=(cracks*.60+smoothstep(.76,.93,grain)*.10)*heat
-          *(.66+.16*uCoalHeat);
+          *.82*max(0.0,uCoalHeat);
       `)
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
         totalEmissiveRadiance *= fuelGlow;`)
@@ -190,7 +195,7 @@ function fuelMaterial(coalHeat: { value: number }): MeshStandardMaterial {
         }
       `);
   };
-  material.customProgramCacheKey = () => 'rainfire-charred-fuel-v3';
+  material.customProgramCacheKey = () => 'rainfire-charred-fuel-v4';
   return material;
 }
 
@@ -328,7 +333,7 @@ const volumeFragment = /* glsl */ `
   }
 
   float tongue(vec3 p, vec2 foot, float height, float width, float phase) {
-    float h = clamp((p.y - 0.15) / height, 0.0, 1.0);
+    float h = clamp((p.y - 0.15) / max(height, .001), 0.0, 1.0);
     vec2 curl = vec2(sin(p.y * 7.3 - uTime * 2.5 + phase),
       cos(p.y * 6.1 - uTime * 2.1 + phase)) * (0.020 + h * 0.085);
     curl += vec2(sin(p.y * 17.7 - uTime * 5.7 + phase),
@@ -535,7 +540,7 @@ function sparks(seed: string, time: { value: number }, wind: { value: Vector2 },
         vSparkAsh = step(0.79, aPhase) * smoothstep(0.10, 0.45, age);
         gl_PointSize = clamp(projected * (1.0 + vSparkAsh * 0.6), 0.7 * uPixelRatio, 3.5 * uPixelRatio);
         vSparkAlpha = smoothstep(0.0, 0.10, age) * (1.0 - smoothstep(0.55, 1.0, age))
-          * min(1.0, projected / max(0.5, uPixelRatio));
+          * min(1.0, projected / max(0.5, uPixelRatio)) * min(1.0, uFireHeat);
         vSparkHeat = clamp((1.0 - age) * (0.9 + uFireHeat * 0.1), 0.0, 1.0);
         #include <fog_vertex>
       }
@@ -589,6 +594,8 @@ export interface Campfire {
   update(frame: EnvironmentSnapshot): void;
   setQuality(quality: QualityLevel): void;
   setSceneDepth(field: SceneDepthField): void;
+  setEnvironmentCapture(enabled: boolean): void;
+  diagnostics(): Record<string, number>;
 }
 
 /**
@@ -599,6 +606,7 @@ export interface Campfire {
 export function createCampfire(seed: string, quality: QualityLevel): Campfire {
   const group = new Group();
   group.name = 'sheltered-campfire';
+  group.userData.yyjSnowExclude = true;
   const time = { value: 0 }, wind = { value: new Vector2(0.45, 0.12) };
   const combustion = createFireIllumination(seed);
   const illumination = combustion.state;
@@ -635,6 +643,37 @@ export function createCampfire(seed: string, quality: QualityLevel): Campfire {
   fuelPieces.forEach(geometry=>geometry.dispose());
   const fuel=new Mesh(fuelGeometry,material);
   fuel.name='charred-split-log-batch';fuel.castShadow=fuel.receiveShadow=true;group.add(fuel);
+
+  // Four prepared slots bound geometry and draw calls even after many feeds.
+  // The latest feed replaces the oldest slot; only its charring starts again.
+  // Every slot retains its own local grain and cut-end coordinates after merge.
+  const freshBurn = { value: new Vector4(.08, .08, .08, .08) };
+  const addedMaterial = fuelMaterial(fire.uCoalHeat, freshBurn);
+  addedMaterial.name = 'generated-fresh-to-charred-firewood';
+  addedMaterial.color.set('#8b6742');
+  const additions = [
+    [-.09, .405, .035, -.35, .12, .80, .072],
+    [.07, .455, -.025, 1.15, -.12, .69, .064],
+    [-.08, .505, .075, -.98, .08, .65, .060],
+    [.18, .370, .095, 1.85, -.30, .71, .067],
+  ] as const;
+  const addedPieces: BufferGeometry[] = [];
+  for (const [index, [x, y, z, yaw, lean, length, radius]] of additions.entries()) {
+    const geometry = logGeometry(`${seed}/fed-log/${index}`, length, radius);
+    const slot = geometry.getAttribute('aFuelSlot');
+    for (let vertex = 0; vertex < slot.count; vertex++) slot.setX(vertex, index);
+    const placement = new Mesh(geometry, addedMaterial);
+    placement.position.set(x, y, z); placement.rotation.set(.08 * Math.sin(index * 2.3), yaw, lean);
+    placement.updateMatrix(); geometry.applyMatrix4(placement.matrix);
+    addedPieces.push(geometry);
+  }
+  const indicesPerLog = addedPieces[0]!.index!.count;
+  const addedGeometry = mergeGeometries(addedPieces, false)!;
+  addedPieces.forEach(geometry => geometry.dispose());
+  addedGeometry.setDrawRange(0, 0);
+  const addedWood = new Mesh(addedGeometry, addedMaterial);
+  addedWood.name = 'fed-split-log-batch'; addedWood.castShadow = addedWood.receiveShadow = true;
+  addedWood.visible = false; group.add(addedWood);
   const hearthMaterial = createRainMaterial('stone', `${seed}/hearth`);
   hearthMaterial.vertexColors=true;
   hearthMaterial.color.set('#68685e');
@@ -661,13 +700,27 @@ export function createCampfire(seed: string, quality: QualityLevel): Campfire {
   coalLight.name='ember-bounce';
   group.add(stones, coals, volume.mesh, embers, ...lights, coalLight);
   group.userData.generatedFire = { flameHeight: .98, hearthRadius: 0.86, fixedAssets: 0 };
+  let lastFeedId = 0, visibleAddedLogs = 0, capture = false, lastElapsed = 0;
+  let currentQuality = quality;
+  const heatExposure = [0, 0, 0, 0];
   return {
     group, illumination, light: lights[1]!, lights,
     setSceneDepth: field => volume.setSceneDepth(field),
+    setEnvironmentCapture(enabled): void {
+      capture = enabled;
+      // This static probe and its contact capture always see the initial fuel
+      // arrangement. Fed wood is lit/shadowed live after capture is restored.
+      addedWood.visible = !enabled && visibleAddedLogs > 0;
+    },
+    diagnostics: () => ({
+      visibleAddedLogs, fireLightIntensity: illumination.intensity,
+      emberLightIntensity: coalLight.intensity, flameHeight: illumination.height,
+      fireSparks: embers.visible ? embers.geometry.drawRange.count : 0,
+    }),
     update(frame): void {
       time.value = frame.elapsed;
       wind.value.set(Math.max(-1.5, Math.min(1.5, frame.wind.x)), Math.max(-1.0, Math.min(1.0, frame.wind.z)));
-      combustion.update(frame.elapsed, wind.value.x, wind.value.y);
+      combustion.update(frame.elapsed, wind.value.x, wind.value.y, frame.fire);
       fire.uFireHeat.value = illumination.heat;
       fire.uFlameHeight.value = illumination.height;
       fire.uCoalHeat.value = illumination.coalHeat;
@@ -682,8 +735,32 @@ export function createCampfire(seed: string, quality: QualityLevel): Campfire {
         light.intensity = illumination.intensity * sample.weight;
       }
       coalLight.intensity = .45 * illumination.coalHeat;
+      volume.mesh.visible = illumination.heat > .001 || illumination.smoke > .001;
+      embers.visible = illumination.heat > .015;
+      embers.geometry.setDrawRange(0, Math.round(SPARKS[currentQuality]
+        * Math.min(1, Math.pow(Math.max(0, frame.fire.flame / .62), .65))));
+
+      if (frame.fire.feedId < lastFeedId || frame.elapsed < lastElapsed) {
+        heatExposure.fill(0); lastFeedId = 0;
+      }
+      // Catch several button presses coalesced into one frozen redraw as well
+      // as the usual one-at-a-time feeds. No mesh or GPU buffer is allocated.
+      for (let id = Math.max(lastFeedId + 1, frame.fire.feedId - 3); id <= frame.fire.feedId; id++) {
+        heatExposure[(id - 1) % 4] = 0;
+      }
+      lastFeedId = frame.fire.feedId;
+      visibleAddedLogs = Math.max(0, Math.min(4, Math.floor(frame.fire.addedLogs)));
+      const delta = Math.max(0, Math.min(.1, frame.elapsed - lastElapsed));
+      for (let slot = 0; slot < 4; slot++) {
+        if (slot < visibleAddedLogs) heatExposure[slot]! += delta * frame.fire.heat;
+        freshBurn.value.setComponent(slot, .08 + .92 * (1 - Math.exp(-heatExposure[slot]! * .018)));
+      }
+      addedGeometry.setDrawRange(0, visibleAddedLogs * indicesPerLog);
+      addedWood.visible = !capture && visibleAddedLogs > 0;
+      lastElapsed = frame.elapsed;
     },
     setQuality(next): void {
+      currentQuality = next;
       (volume.mesh.material as ShaderMaterial).uniforms.uSteps!.value = STEPS[next];
       embers.geometry.setDrawRange(0, SPARKS[next]);
       lights.forEach(light => { light.castShadow = next !== 'low'; });

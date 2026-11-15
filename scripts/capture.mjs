@@ -11,6 +11,10 @@ const { values } = parseArgs({
     device: { type: 'string', default: 'all' },
     seed: { type: 'string', default: 'yunyanji-rainfire-01' },
     seconds: { type: 'string', default: '0' },
+    weather: { type: 'string' },
+    fire: { type: 'string' },
+    wood: { type: 'string', default: '0' },
+    panel: { type: 'boolean', default: false },
     dpr: { type: 'string' },
     scale: { type: 'string', default: 'css' },
     output: { type: 'string', default: 'test-results/captures' },
@@ -24,6 +28,10 @@ if (values.help) {
   --device all|desktop|mobile   Viewports to capture (default: all)
   --seed VALUE                  Reproducible landscape seed (default: yunyanji-rainfire-01)
   --seconds NUMBER              Let the scene animate before capture, 0–30 (default: 0)
+  --weather MODE                clear|overcast|drizzle|rain|downpour|snow
+  --fire STATE                  out|embers|small|steady|roaring
+  --wood NUMBER                 Add 0–4 logs through the real control (default: 0)
+  --panel                       Keep the weather/fire panel visible in the capture
   --dpr NUMBER                  Emulate display pixel ratio, 1–3 (default: device profile)
   --scale css|device            CSS-size preview or full device-pixel capture (default: css)
   --output DIRECTORY            Destination (default: test-results/captures)
@@ -41,6 +49,14 @@ The command starts and stops its own local preview server and browser.`);
 async function capture() {
   const seconds = Number(values.seconds);
   if (!Number.isFinite(seconds) || seconds < 0 || seconds > 30) throw new Error('--seconds must be between 0 and 30.');
+  const wood = Number(values.wood);
+  if (!Number.isInteger(wood) || wood < 0 || wood > 4) throw new Error('--wood must be an integer between 0 and 4.');
+  if (values.weather !== undefined && !['clear', 'overcast', 'drizzle', 'rain', 'downpour', 'snow'].includes(values.weather)) {
+    throw new Error('--weather must be clear, overcast, drizzle, rain, downpour or snow.');
+  }
+  if (values.fire !== undefined && !['out', 'embers', 'small', 'steady', 'roaring'].includes(values.fire)) {
+    throw new Error('--fire must be out, embers, small, steady or roaring.');
+  }
   const dpr = values.dpr === undefined ? undefined : Number(values.dpr);
   if (dpr !== undefined && (!Number.isFinite(dpr) || dpr < 1 || dpr > 3)) throw new Error('--dpr must be between 1 and 3.');
   if (values.scale !== 'css' && values.scale !== 'device') throw new Error('--scale must be css or device.');
@@ -74,6 +90,10 @@ async function capture() {
         : 'Browser default requested; hardware acceleration is not guaranteed',
       seed: values.seed,
       requestedElapsed: seconds,
+      requestedWeather: values.weather ?? 'rain',
+      requestedFire: values.fire ?? 'steady',
+      requestedLogs: wood,
+      panelVisible: values.panel,
       captures: [],
     };
     for (const profile of profiles) {
@@ -88,6 +108,20 @@ async function capture() {
         await page.goto(url.href, { waitUntil: 'load', timeout: 45_000 });
         await page.locator('#app[data-ready="true"]').waitFor({ timeout: 60_000 });
         await page.evaluate(() => document.fonts.ready);
+        if (values.weather !== undefined || values.fire !== undefined || wood > 0 || values.panel) {
+          await page.getByRole('button', { name: '天候', exact: true }).click();
+          if (values.weather !== undefined) await page.locator(`[data-weather="${values.weather}"]`).click();
+          if (values.fire !== undefined) await page.locator('#fire-state').selectOption(values.fire);
+          for (let log = 0; log < wood; log++) await page.getByRole('button', { name: '添柴', exact: true }).click();
+          // Preset changes while paused share the same elapsed time. Wait for
+          // both action revisions, not merely for another time-T frame.
+          await page.waitForFunction(() => {
+            const current = window.__YUNYANJI__?.getState();
+            return current && current.renderedWeatherRevision === current.weather.revision
+              && current.renderedFireRevision === current.fire.revision;
+          }, undefined, { timeout: 45_000 });
+          if (!values.panel) await page.getByRole('button', { name: '收起天候面板', exact: true }).click();
+        }
         if (seconds > 0) {
           await page.emulateMedia({ reducedMotion: 'no-preference' });
           await page.getByRole('button', { name: '继续', exact: true }).click();
@@ -101,6 +135,7 @@ async function capture() {
             return snapshot && Number(snapshot.renderedElapsed) >= Number(snapshot.elapsed);
           }, undefined, { timeout: 45_000 });
         }
+        await page.locator('.notice.visible').waitFor({ state: 'detached', timeout: 10_000 });
         const state = await page.evaluate(() => window.__YUNYANJI__?.getState());
         if (!state || !(Number(state.triangles) > 0) || state.contextLost) throw new Error(`${profile.name}: no ready WebGL frame.`);
         const webgl = await page.evaluate(() => {

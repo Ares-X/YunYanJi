@@ -40,6 +40,32 @@ button:focus-visible, select:focus-visible, input:focus-visible, canvas:focus-vi
 nav { display: flex; gap: clamp(4px, 1.5vw, 25px); align-items: center; margin-top: -8px; }
 nav button { color: #d1d6ce; text-shadow: 0 2px 6px #02090c; }
 #sound { color: #e5ba87; }
+.weather-panel {
+  position: absolute; z-index: 3; top: 91px; right: var(--edge); width: 310px;
+  max-height: calc(100dvh - 190px); overflow: auto; padding: 22px 24px 15px;
+  color: #e0dfd1; background: #142025ed; border: 1px solid #b4ba9d2b;
+  box-shadow: 0 15px 50px #01060840; backdrop-filter: blur(18px);
+}
+.weather-panel[hidden] { display: none; }
+.panel-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; gap: 8px; }
+.panel-heading h2 { font-size: 16px; font-weight: 400; letter-spacing: .15em; margin: 0; }
+.panel-heading button { padding-right: 0; font-size: 10px; color: #a8b5ae; }
+.weather-panel fieldset { padding: 0; margin: 0; border: 0; min-width: 0; }
+.weather-panel legend { padding: 0; margin-bottom: 12px; font-size: 10px; letter-spacing: .2em; color: #a6b3ad; }
+.weather-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; }
+.weather-grid button { border: 1px solid #b4ba9d25; min-height: 42px; padding: 10px 4px; color: #c4cec7; }
+.weather-grid button[aria-pressed="true"] { background: #b49a6b20; color: #f1d6ab; border-color: #bf9f6466; }
+.thunder-row { display: flex; align-items: center; justify-content: space-between; margin: 12px 0 23px; }
+.thunder-row label { display: flex; align-items: center; gap: 9px; font-size: 11px; letter-spacing: .1em; color: #b9c4bd; min-height: 42px; cursor: pointer; }
+.thunder-row input { width: 15px; height: 15px; margin: 0; accent-color: #b5956c; }
+.thunder-row button { padding-right: 0; color: #e1d5bd; }
+.weather-panel .fire-controls { border-top: 1px solid var(--line); padding-top: 16px; }
+.weather-panel .fire-controls legend { padding: 0 10px 0 0; margin-bottom: 0; }
+.fire-setting { display: flex; justify-content: space-between; align-items: center; font-size: 12px; letter-spacing: .1em; }
+.fire-setting select { color: #e2d4be; background: #1a282d; padding: 9px 6px; border: 1px solid #b4ba9d25; min-width: 100px; font-size: 12px; }
+#add-wood { width: 100%; min-height: 42px; margin-top: 16px; background: #c4995f13; border: 1px solid #b4935e4a; color: #e3c69b; }
+#add-wood:hover { background: #c4995f25; }
+.panel-note { margin: 12px 0 2px; font-size: 10px; line-height: 1.7; letter-spacing: .06em; color: #a8b1a8; }
 .scene-footer {
   position: absolute; left: var(--edge); right: var(--edge); bottom: max(34px, env(safe-area-inset-bottom));
   display: flex; align-items: flex-end; justify-content: space-between; gap: 20px;
@@ -99,6 +125,7 @@ dialog .notice.visible { transform: none; }
   .brand > span { font-size: 8px; letter-spacing: .22em; }
   nav { gap: 3px; }
   nav button { padding: 10px 7px; font-size: 11px; }
+  .weather-panel { top: 82px; right: var(--edge); width: min(310px, calc(100vw - 46px)); padding: 18px 21px 14px; max-height: calc(100dvh - 190px); }
   .scene-footer { bottom: max(28px, env(safe-area-inset-bottom)); gap: 10px; }
   .scene-caption h2 { font-size: 23px; }
   .scene-caption p { font-size: 9px; }
@@ -116,5 +143,6 @@ dialog .notice.visible { transform: none; }
   .scene-caption h2 { font-size: 20px; margin-bottom: 0; }
   .scene-caption p { margin-bottom: 7px; }
   #hint { display: none; }
+  .weather-panel { top: 65px; max-height: calc(100dvh - 105px); }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; } }

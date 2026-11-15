@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  generateEmberLoop, generateFireCrackleLoop, generateRainDropsLoop, generateRainLoop, generateWindLoop,
+  generateEmberLoop, generateFireCrackleLoop, generateRainDropsLoop, generateRainLoop,
+  generateSnowLoop, generateThunder, generateWindLoop, generateWoodFeed,
 } from '../../src/audio/synthesis';
 
 function stats(samples: Float32Array) {
@@ -31,7 +32,7 @@ function stats(samples: Float32Array) {
 
 describe('generated ambience samples', () => {
   it('recreates the same scene without sharing random state between sound layers', () => {
-    for (const generator of [generateWindLoop, generateRainLoop, generateEmberLoop]) {
+    for (const generator of [generateWindLoop, generateRainLoop, generateEmberLoop, generateSnowLoop]) {
       const original = generator('refuge:near', 16000);
       generator('refuge:other', 8000);
       expect(generator('refuge:near', 16000)).toEqual(original);
@@ -107,13 +108,53 @@ describe('generated ambience samples', () => {
   });
 
   it('rejects unusable synthesis dimensions instead of allocating invalid buffers', () => {
-    for (const generator of [generateWindLoop, generateRainLoop, generateEmberLoop]) {
+    for (const generator of [generateWindLoop, generateRainLoop, generateEmberLoop, generateSnowLoop]) {
       expect(() => generator('rainfire', 0)).toThrow(RangeError);
       expect(() => generator('rainfire', Number.NaN)).toThrow(RangeError);
     }
-    for (const generator of [generateFireCrackleLoop, generateRainDropsLoop]) {
+    for (const generator of [generateFireCrackleLoop, generateRainDropsLoop, generateThunder]) {
       expect(() => generator('rainfire', 0)).toThrow(RangeError);
       expect(() => generator('rainfire', 16000, Number.NaN)).toThrow(RangeError);
     }
+    expect(() => generateWoodFeed('rainfire', 0)).toThrow(RangeError);
+  });
+
+  it('gives thunder a finite unpitched low roll and a smooth, silent ending', () => {
+    const thunder = generateThunder('distant-valley', 16000, 9);
+    const result = stats(thunder);
+    const head = stats(thunder.subarray(0, 16000));
+    const middle = stats(thunder.subarray(16000, 16000 * 6));
+    const tail = stats(thunder.subarray(-16000));
+    expect(result.peak).toBeLessThanOrEqual(0.821);
+    expect(result.rms).toBeGreaterThan(0.02);
+    expect(Math.abs(result.mean)).toBeLessThan(1e-6);
+    // The initial pressure crack is brighter than the prolonged low roll.
+    expect(result.differenceEnergyRatio).toBeLessThan(0.25);
+    expect(middle.differenceEnergyRatio).toBeLessThan(head.differenceEnergyRatio);
+    expect(middle.rms).toBeGreaterThan(head.rms * 0.1);
+    expect(tail.rms).toBeLessThan(head.rms * 0.1);
+    expect(thunder[0]).toBe(0);
+    expect(Math.abs(thunder.at(-1)!)).toBeLessThan(1e-7);
+    expect(generateThunder('distant-valley', 16000, 9)).toEqual(thunder);
+    expect(generateThunder('another-valley', 16000, 9)).not.toEqual(thunder);
+  });
+
+  it('keeps snow softer in frequency than rain and gives cold/hot feeding different transients', () => {
+    const snow = stats(generateSnowLoop('roof', 48000));
+    const rain = stats(generateRainLoop('roof', 48000));
+    expect(snow.differenceEnergyRatio).toBeLessThan(rain.differenceEnergyRatio * 0.4);
+    expect(snow.peak).toBeLessThan(0.47);
+    const hot = generateWoodFeed('hearth', 16000, true);
+    const cold = generateWoodFeed('hearth', 16000, false);
+    for (const samples of [hot, cold]) {
+      const result = stats(samples);
+      expect(result.peak).toBeLessThan(0.69);
+      expect(result.rms).toBeGreaterThan(0.01);
+      expect(Math.abs(result.mean)).toBeLessThan(1e-6);
+      expect(samples[0]).toBe(0);
+      expect(Math.abs(samples.at(-1)!)).toBeLessThan(1e-7);
+    }
+    expect(hot).not.toEqual(cold);
+    expect(generateWoodFeed('hearth', 16000, true)).toEqual(hot);
   });
 });

@@ -63,6 +63,7 @@ async function start(): Promise<() => void> {
       frameCount += 1;
     }
     audio.update(snapshot);
+    ui.setEnvironment(snapshot);
     raf = requestAnimationFrame(frame);
   };
 
@@ -72,6 +73,7 @@ async function start(): Promise<() => void> {
     raf = 0;
     stillRaf = 0;
     lastTime = 0;
+    audio.update(weather.snapshot());
     void audio.setSuspended(audioSuspended()).catch(() => ui.notify('声音暂时中断，可重新开启。'));
     ui.setPaused(manualPause);
     if (!suspended() && world && prepared) raf = requestAnimationFrame(frame);
@@ -103,10 +105,44 @@ async function start(): Promise<() => void> {
     setRain: (value) => {
       weather.setPrecipitation(value);
       audio.update(weather.snapshot());
+      ui.setEnvironment(weather.snapshot());
       scheduleStill();
     },
+    setWeather: (mode) => {
+      weather.setWeather(mode, suspended());
+      const snapshot = weather.snapshot();
+      audio.update(snapshot); ui.setEnvironment(snapshot); scheduleStill();
+    },
+    setAutomaticThunder: (enabled) => {
+      weather.setAutomaticThunder(enabled);
+      const snapshot = weather.snapshot();
+      audio.update(snapshot); ui.setEnvironment(snapshot); scheduleStill();
+    },
+    thunder: () => {
+      if (!weather.triggerThunder()) { ui.notify('雷声还在山间回荡。', 1600); return; }
+      if (manualPause) { manualPause = false; syncPlayback(); }
+      audio.update(weather.snapshot()); scheduleStill();
+      ui.notify(weather.reducedMotion ? '远处要响雷了。' : '远处一道闪电，雷声稍后到来。', 2800);
+    },
+    setFire: (state) => {
+      weather.setFireState(state, suspended());
+      const snapshot = weather.snapshot();
+      audio.update(snapshot); ui.setEnvironment(snapshot); scheduleStill();
+    },
+    addWood: () => {
+      if (!weather.addWood()) { ui.notify('柴堆已经放满了。', 1800); return; }
+      const snapshot = weather.snapshot();
+      audio.update(snapshot); ui.setEnvironment(snapshot); scheduleStill();
+      ui.notify(snapshot.fire.state === 'out' ? '柴放好了，选择火势即可点燃。'
+        : manualPause ? '添了一根柴，继续后看它慢慢燃起。' : '添了一根柴，等它慢慢燃起来。');
+    },
     setQuality: (value) => { quality = value; resize(); },
-    reset: () => { weather.reset(); world?.resetView(); scheduleStill(); ui.notify('回到初见时。'); },
+    reset: () => {
+      weather.reset(); world?.resetView();
+      const snapshot = weather.snapshot();
+      audio.update(snapshot); ui.setEnvironment(snapshot); scheduleStill();
+      ui.notify('回到初见时。');
+    },
     share: async () => {
       const link = sceneLink(window.location.href, seed);
       window.history.replaceState(null, '', link);
@@ -117,6 +153,8 @@ async function start(): Promise<() => void> {
     dialogChanged: (value) => { activeDialog = value; syncPlayback(); },
   });
   ui.setPaused(manualPause);
+  ui.setEnvironment(weather.snapshot());
+  audio.update(weather.snapshot());
 
   const resize = () => {
     if (!world || disposed || contextLost) return;
@@ -224,11 +262,16 @@ async function start(): Promise<() => void> {
   if (new URLSearchParams(location.search).get('debug') === '1') {
     // Explicit opt-in diagnostic readout, absent from the visitor interface.
     window.__YUNYANJI__ = {
-      getState: () => ({ seed, scene: landscape.id, elapsed: weather.elapsed, gust: weather.snapshot().gust,
-        rain: weather.precipitation, paused: manualPause, suspended: suspended(), disposed, contextLost,
-        frames: frameCount, lastRenderCpuMs: lastFrameMs,
-        audioEnabled: audio.enabled, audioState: audio.state, audioContext: audio.contextState, audioVolume: audio.volume,
-        ...world?.diagnostics() }),
+      getState: () => {
+        const snapshot = weather.snapshot();
+        return { seed, scene: landscape.id, elapsed: snapshot.elapsed, gust: snapshot.gust,
+          rain: snapshot.weather.rain, snow: snapshot.weather.snow, weather: snapshot.weather,
+          lightning: snapshot.lightning, fire: snapshot.fire,
+          paused: manualPause, suspended: suspended(), disposed, contextLost,
+          frames: frameCount, lastRenderCpuMs: lastFrameMs,
+          audioEnabled: audio.enabled, audioState: audio.state, audioContext: audio.contextState, audioVolume: audio.volume,
+          ...audio.diagnostics(), ...world?.diagnostics() };
+      },
       dispose,
     };
   }

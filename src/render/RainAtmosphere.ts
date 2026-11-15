@@ -1,8 +1,9 @@
 import { BackSide, Color, Mesh, ShaderMaterial, SphereGeometry, Vector3 } from 'three';
+import type { EnvironmentSnapshot } from '../core/types';
 
 export const CLOUD_LIGHT_DIRECTION = new Vector3(-9, 22, -24).normalize();
 
-/** An overcast late-evening sky; every density sample is evaluated in the shader. */
+/** Analytical changing cloud cover; no sky image, authored map or star sprite. */
 export function createRainAtmosphere() {
   const material = new ShaderMaterial({
     side: BackSide,
@@ -10,6 +11,8 @@ export function createRainAtmosphere() {
     depthTest: false,
     uniforms: {
       uTime: { value: 0 },
+      uCloudCover: { value: .9 }, uDaylight: { value: .25 },
+      uStorm: { value: 0 }, uSnow: { value: 0 }, uFlash: { value: 0 },
       uZenith: { value: new Color('#43576c') },
       uCloudLight: { value: new Color('#9cb1bb') },
       uHaze: { value: new Color('#4d6874') },
@@ -24,7 +27,7 @@ export function createRainAtmosphere() {
       }
     `,
     fragmentShader: /* glsl */ `
-      uniform float uTime;
+      uniform float uTime, uCloudCover, uDaylight, uStorm, uSnow, uFlash;
       uniform vec3 uZenith, uCloudLight, uHaze, uGround, uCloudDirection;
       varying vec3 vDirection;
       float hash(vec3 p) {
@@ -57,15 +60,25 @@ export function createRainAtmosphere() {
           + vec2(uTime * 0.002, -uTime * 0.0007), 1.6);
         float broad = fbm(cloudPosition);
         float wisps = fbm(cloudPosition * vec3(3.7, 2.1, 1.0) + broad * 1.2);
-        float density = smoothstep(0.24, 0.77, broad * 0.76 + wisps * 0.24);
-        vec3 radiance = mix(uZenith, uCloudLight, exp(-elevation * 3.5));
-        radiance *= 0.55 + 0.45 * (1.0 - density);
-        float breakInCloud = pow(max(dot(d, uCloudDirection), 0.0), 8.0);
-        radiance += vec3(0.015, 0.021, 0.024) * breakInCloud * (1.0 - density);
-        // A broad opening over the distant grove gives wet branches a cool
-        // rim without introducing another point source or hard sun.
-        float openSky=pow(max(0.0,dot(d,uCloudDirection)),4.0);
-        radiance+=vec3(.09,.11,.12)*openSky*smoothstep(0.0,.25,d.y);
+        float field = broad * 0.76 + wisps * 0.24;
+        float threshold = mix(.69, .20, uCloudCover);
+        float density = smoothstep(threshold, threshold + .24, field);
+        vec3 clearZenith = mix(uZenith, vec3(.13,.32,.57), uDaylight);
+        vec3 clearHorizon = mix(uCloudLight, vec3(.68,.77,.79), uDaylight);
+        vec3 radiance = mix(clearZenith, clearHorizon, exp(-elevation * 3.5));
+        vec3 cloudColor = mix(vec3(.37,.46,.52), vec3(.75,.79,.80), uDaylight);
+        cloudColor *= (1.0 - uStorm * .61) * (.74 + .26 * (1.0 - wisps));
+        cloudColor = mix(cloudColor, vec3(.56,.63,.68), uSnow * .25);
+        radiance = mix(radiance, cloudColor, density);
+        float facing = max(dot(d, uCloudDirection), 0.0);
+        float sunDisk = smoothstep(.99988,.99996,facing);
+        float openSky = pow(facing,4.0);
+        float direct = uDaylight * (1.0 - uCloudCover) * (1.0 - density);
+        radiance += vec3(1.0,.87,.66) * (sunDisk * 18.0 + pow(facing,40.0) * .36) * direct;
+        radiance += vec3(.09,.11,.12) * openSky * smoothstep(0.0,.25,d.y) * (1.0 - uStorm * .7);
+        radiance *= .76 + uDaylight * .38 - uStorm * .24;
+        // A cloud sheet is illuminated by the same strike that lights the trees.
+        radiance += vec3(.64,.76,1.0) * uFlash * (1.0 + density * .9);
         // Match terrain fog all the way through the low sky; an abrupt colour
         // mismatch would expose the far height field as a clean horizon wall.
         radiance = mix(radiance, uHaze, 1.0-smoothstep(.06,.42,elevation));
@@ -77,21 +90,31 @@ export function createRainAtmosphere() {
     `,
   });
   const mesh = new Mesh(new SphereGeometry(350, 40, 20), material);
-  mesh.name = 'generated-rain-atmosphere';
+  mesh.name = 'generated-weather-atmosphere';
   mesh.frustumCulled = false;
   mesh.renderOrder = -100;
-  let currentTime = 0;
+  let currentFrame: EnvironmentSnapshot | undefined;
+  const rainHaze = new Color('#4d6874'), clearHaze = new Color('#abc7d7');
+  const snowHaze = new Color('#8d9da8'), stormHaze = new Color('#2b3945');
+  const apply = (frame?: EnvironmentSnapshot): void => {
+    const weather = frame?.weather;
+    material.uniforms.uTime!.value = frame?.elapsed ?? 0;
+    material.uniforms.uCloudCover!.value = weather?.cloudCover ?? .9;
+    material.uniforms.uDaylight!.value = weather?.daylight ?? .25;
+    material.uniforms.uStorm!.value = weather?.storm ?? 0;
+    material.uniforms.uSnow!.value = weather?.snow ?? 0;
+    material.uniforms.uFlash!.value = frame?.lightning?.flash ?? 0;
+    (material.uniforms.uHaze!.value as Color).copy(rainHaze)
+      .lerp(clearHaze, (weather?.daylight ?? .25) * (1 - (weather?.cloudCover ?? .9)))
+      .lerp(snowHaze, (weather?.snow ?? 0) * .65)
+      .lerp(stormHaze, weather?.storm ?? 0);
+  };
   return {
     mesh,
-    update(elapsed: number): void {
-      currentTime = elapsed;
-      material.uniforms.uTime!.value = elapsed;
-    },
-    // The cached environment always represents the same cloud field. Context
-    // restoration must not suddenly relight an otherwise frozen scene.
-    setEnvironmentCapture(capturing: boolean): void {
-      material.uniforms.uTime!.value = capturing ? 0 : currentTime;
-    },
+    update(frame: EnvironmentSnapshot): void { currentFrame = frame; apply(frame); },
+    // Local IBL remains a deterministic overcast reference. Live sky and
+    // direct/ambient energy change without rebaking an expensive probe per frame.
+    setEnvironmentCapture(capturing: boolean): void { apply(capturing ? undefined : currentFrame); },
     dispose(): void { mesh.geometry.dispose(); material.dispose(); },
   };
 }

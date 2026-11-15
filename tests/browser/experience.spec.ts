@@ -13,9 +13,11 @@ async function settledLighting(page: Page, elapsed: number) {
       rendered: Number(current.renderedElapsed),
       canopy: Number(current.lastCanopyShadow),
       fire: Number(current.lastFireShadow),
+      actions: current.renderedWeatherRevision === (current.weather as { revision: number }).revision
+        && current.renderedFireRevision === (current.fire as { revision: number }).revision,
     };
   }, { timeout: 45_000, message: 'The final still frame must use shadows from the same simulation time' })
-    .toEqual({ rendered: elapsed, canopy: elapsed, fire: elapsed });
+    .toEqual({ rendered: elapsed, canopy: elapsed, fire: elapsed, actions: true });
   return state(page);
 }
 
@@ -103,7 +105,7 @@ test('renders the rainy refuge and supports motion, sound and immersion', async 
     expect(viewX).toBeGreaterThan(previousViewX);
     previousViewX = viewX;
   }
-  await page.getByRole('button', { name: '听雨', exact: true }).click();
+  await page.getByRole('button', { name: '听声', exact: true }).click();
   await expect.poll(async () => (await state(page)).audioState).toBe('playing');
   await page.getByRole('button', { name: '暂停', exact: true }).click();
   await expect.poll(async () => (await state(page)).audioContext).toBe('suspended');
@@ -147,7 +149,7 @@ test('previews settings by keyboard, updates procedural rendering and releases r
   // software GPU is still finishing the first frame. Keep the 15 s action limit.
   // Begin playback, then freeze rendering in settings while retaining sound.
   await page.emulateMedia({ reducedMotion: 'no-preference' });
-  for (const name of ['起风', '听雨', '设置']) {
+  for (const name of ['起风', '听声', '设置']) {
     const button = page.getByRole('button', { name, exact: true });
     await expect(button).toBeVisible();
     await expect(button).toBeEnabled();
@@ -265,7 +267,16 @@ test('starts still for reduced motion and recovers from WebGL context loss', asy
   await expect.poll(async () => Number((await state(page)).elapsed), { timeout: 45_000 }).toBeGreaterThan(2);
   await page.getByRole('button', { name: '暂停', exact: true }).click();
   const frozenAt = Number((await state(page)).elapsed);
+  // Recover an edited world as well as time: snow, new fuel and its shadows
+  // must survive while the static environment still uses its reference pose.
+  await page.getByRole('button', { name: '天候', exact: true }).click();
+  await page.getByRole('button', { name: '下雪', exact: true }).click();
+  await page.getByRole('button', { name: '添柴', exact: true }).click();
+  await page.getByRole('button', { name: '添柴', exact: true }).click();
+  await page.getByRole('button', { name: '收起天候面板' }).click();
   await settledLighting(page, frozenAt);
+  // Exclude transient action feedback from the two equivalent photographs.
+  await expect(page.locator('#notice')).not.toHaveClass(/visible/);
   await page.evaluate(async () => { await document.fonts.ready; });
   await expect.poll(async () => Number((await state(page)).reflectionUpdates)).toBeGreaterThan(0);
   const before = await page.screenshot({
