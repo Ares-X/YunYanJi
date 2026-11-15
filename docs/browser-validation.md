@@ -1,6 +1,6 @@
 # 本地截图与浏览器验收
 
-视觉调整先在本地完成，不需要为了看一张截图推送提交或使用远程浏览器服务。截图工具与完整测试共用 Playwright，浏览器由当前电脑运行；截图不会上传到 GitHub。需要 Node.js 24。
+视觉调整先在本地完成，不需要为了看一张截图推送提交或使用远程浏览器服务。截图工具与完整测试共用 Playwright，浏览器由当前电脑运行；本地执行的截图命令不会上传图片到 GitHub。需要 Node.js 24。
 
 ## 第一次准备
 
@@ -101,6 +101,8 @@ npm run test:browser
 
 桌面和手机分别运行三组独立用例：画面与动态交互、设置与资源释放、上下文恢复。将行为分开可避免一个长流程在最后的诊断步骤耗尽总预算；原有的网络、错误、交互和恢复断言继续保留，交互与截图的单步限制不变。
 
+第一组通过指针操作起风、声音与设置；第二组使用按钮的原生 Enter 激活，再检查声音预览和静止画质切换，同时覆盖键盘访问。键盘路径不依赖软件 GPU 合成期间用于鼠标稳定性检查的连续两帧。普通用例总预算为 120 秒；上下文恢复用例包含两次世界初始化、一次画质切换和两次像素回读，单独使用 180 秒总预算。输入仍限 15 秒，每次 GPU 等待和截图仍限 45 秒。
+
 ## CI 什么时候运行
 
 | 事件 | 静态检查、单元测试、构建 | 完整浏览器测试 |
@@ -120,7 +122,9 @@ GPU 提交采用非阻塞 fence，上一帧未完成时不继续积压绘制；�
 
 GitHub 的 PR 路径过滤基于整个 PR 的差异：一个已经包含代码的正式 PR，即使最新提交只修改文档，也仍可能触发检查。这里保留正式检查，避免在没有核实前一版本通过的情况下跳过质量门。单独的文档 PR 和主分支纯文档推送可以完全跳过。若未来把本工作流设为必需状态检查，应同步评估路径过滤：GitHub 可能让未触发的必需检查保持 Pending；本次不修改仓库保护设置。[路径过滤规则](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#onpushpull_requestpull_request_targetpathspaths-ignore)
 
-正常成功运行不上传截图报告。浏览器失败时保留包含截图和 trace 的 HTML 报告；手动运行时勾选 `upload_evidence` 也会保存成功报告。保留期为 3 天，不重复上传报告中已有的附件。手动入口需要工作流文件先存在于默认分支，尚未合并的首个 PR 应通过正式 PR 触发完成验收。[工作流事件](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_dispatch)
+正式 PR 在完整浏览器测试通过后，会复用当前生产构建，以默认首景种子、静止首帧和 DPR 1 分别实拍桌面与手机画面，保存到 `test-results/visual-review/`。CI 随后将这组审阅截图及其 `capture.json` 与 `playwright-report/` 中的 HTML 报告一起上传为 `browser-evidence` artifact；成功的正式 PR 也会保存这些证据。草稿 PR 仍跳过完整浏览器测试和这组截图，日常视觉迭代继续使用本地 `npm run capture`。
+
+其他运行在失败时上传已有的 HTML 报告；手动运行勾选 `upload_evidence` 也会保存成功报告。报告与审阅证据统一保留 3 天，不额外重复上传 HTML 报告中已有的截图和 trace 附件。手动入口需要工作流文件先存在于默认分支，尚未合并的首个 PR 应通过正式 PR 触发完成验收。[工作流事件](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_dispatch)
 
 ## GitHub 计费边界
 

@@ -1,6 +1,6 @@
 import { BackSide, Color, Mesh, ShaderMaterial, SphereGeometry, Vector3 } from 'three';
 
-export const CLOUD_LIGHT_DIRECTION = new Vector3(-22, 30, 18).normalize();
+export const CLOUD_LIGHT_DIRECTION = new Vector3(-9, 22, -24).normalize();
 
 /** An overcast late-evening sky; every density sample is evaluated in the shader. */
 export function createRainAtmosphere() {
@@ -10,10 +10,11 @@ export function createRainAtmosphere() {
     depthTest: false,
     uniforms: {
       uTime: { value: 0 },
-      uZenith: { value: new Color('#4e6476') },
-      uCloudLight: { value: new Color('#89979d') },
-      uHaze: { value: new Color('#435a65') },
+      uZenith: { value: new Color('#43576c') },
+      uCloudLight: { value: new Color('#9cb1bb') },
+      uHaze: { value: new Color('#4d6874') },
       uGround: { value: new Color('#202a26') },
+      uCloudDirection: { value: CLOUD_LIGHT_DIRECTION },
     },
     vertexShader: /* glsl */ `
       varying vec3 vDirection;
@@ -24,7 +25,7 @@ export function createRainAtmosphere() {
     `,
     fragmentShader: /* glsl */ `
       uniform float uTime;
-      uniform vec3 uZenith, uCloudLight, uHaze, uGround;
+      uniform vec3 uZenith, uCloudLight, uHaze, uGround, uCloudDirection;
       varying vec3 vDirection;
       float hash(vec3 p) {
         p = fract(p * 0.1031);
@@ -59,11 +60,11 @@ export function createRainAtmosphere() {
         float density = smoothstep(0.24, 0.77, broad * 0.76 + wisps * 0.24);
         vec3 radiance = mix(uZenith, uCloudLight, exp(-elevation * 3.5));
         radiance *= 0.55 + 0.45 * (1.0 - density);
-        float breakInCloud = pow(max(dot(d, normalize(vec3(-0.55,0.75,0.45))), 0.0), 8.0);
+        float breakInCloud = pow(max(dot(d, uCloudDirection), 0.0), 8.0);
         radiance += vec3(0.015, 0.021, 0.024) * breakInCloud * (1.0 - density);
-        // A broad opening above/behind the seated observer lights bark and
-        // leaf surfaces without introducing another point source or hard sun.
-        float openSky=pow(max(0.0,dot(d,normalize(vec3(.28,.68,.76)))),4.0);
+        // A broad opening over the distant grove gives wet branches a cool
+        // rim without introducing another point source or hard sun.
+        float openSky=pow(max(0.0,dot(d,uCloudDirection)),4.0);
         radiance+=vec3(.09,.11,.12)*openSky*smoothstep(0.0,.25,d.y);
         // Match terrain fog all the way through the low sky; an abrupt colour
         // mismatch would expose the far height field as a clean horizon wall.

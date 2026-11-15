@@ -124,8 +124,12 @@ function growBark(seed:string):BarkPixels {
   const occlusionOffsets=[[-5,0],[5,0],[0,-7],[0,7],[-8,-9],[8,-9],[-8,9],[8,9]];
   for(let y=0;y<HEIGHT;y++)for(let x=0;x<WIDTH;x++) {
     const i=y*WIDTH+x,o=i*4;
-    const dx=(heights[y*WIDTH+wrap(x+1,WIDTH)]!-heights[y*WIDTH+wrap(x-1,WIDTH)]!)/(2*texelX);
-    const dy=(heights[wrap(y+1,HEIGHT)*WIDTH+x]!-heights[wrap(y-1,HEIGHT)*WIDTH+x]!)/(2*texelY);
+    // Resolve the growth plates while filtering single-texel glitter. The
+    // geometry sampler below still reads the same unmodified relief field.
+    const dx=(heights[y*WIDTH+wrap(x+1,WIDTH)]!+heights[y*WIDTH+wrap(x+2,WIDTH)]!
+      -heights[y*WIDTH+wrap(x-1,WIDTH)]!-heights[y*WIDTH+wrap(x-2,WIDTH)]!)/(6*texelX);
+    const dy=(heights[wrap(y+1,HEIGHT)*WIDTH+x]!+heights[wrap(y+2,HEIGHT)*WIDTH+x]!
+      -heights[wrap(y-1,HEIGHT)*WIDTH+x]!-heights[wrap(y-2,HEIGHT)*WIDTH+x]!)/(6*texelY);
     const inv=1/Math.sqrt(dx*dx+dy*dy+1),moss=lichen[i]!;
     normals[o]=Math.round((-dx*inv*.5+.5)*255);
     normals[o+1]=Math.round((-dy*inv*.5+.5)*255);
@@ -139,16 +143,20 @@ function growBark(seed:string):BarkPixels {
     for(const [ox,oy] of occlusionOffsets) {
       surrounding+=heights[wrap(y+oy!,HEIGHT)*WIDTH+wrap(x+ox!,WIDTH)]!;
     }
-    const visibility=Math.max(.80,1-Math.max(0,surrounding/8-heights[i]!)*160);
-    const shadedTone=tone[i]!*visibility;
+    const hollow=Math.max(0,surrounding/8-heights[i]!);
+    const visibility=Math.max(.80,1-hollow*160);
+    const runoff=noise(x/WIDTH,y/HEIGHT,7,4)*.66+noise(x/WIDTH,y/HEIGHT,21,11)*.34;
+    const wet=saturate(smooth(.27,.69,runoff)*.83+hollow*45);
+    const shadedTone=tone[i]!*visibility*(1-wet*.06);
     // Packed albedo is a relative multiplier, not sRGB colour; decoding is
     // explicit in the wood shader so vertex tone remains physically modest.
     albedo[o]=Math.round(saturate(shadedTone*(.70+warm*.025))*255);
     albedo[o+1]=Math.round(saturate(shadedTone*(.685+warm*.014))*255);
     albedo[o+2]=Math.round(saturate(shadedTone*(.65+warm*.012))*255);
     albedo[o+3]=Math.round(saturate(moss*2.4)*255);
-    const wet=noise(x/WIDTH,y/HEIGHT,7,11);
-    const rough=.69+tone[i]!*.09+wet*.085+moss*.20;
+    // Damp fissures are smoother and darker. Raised plates and lichen retain
+    // a broad response; this is tied to their relief, not an unrelated gloss map.
+    const rough=.82+tone[i]!*.03-wet*.30+moss*.15;
     roughness[o]=255;roughness[o+1]=Math.round(saturate(rough)*255);
     roughness[o+2]=255;roughness[o+3]=255;
   }

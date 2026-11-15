@@ -3,13 +3,14 @@ import {
   PCFShadowMap, PerspectiveCamera, Scene, SRGBColorSpace, Vector2,
   Vector3, WebGLRenderer,
 } from 'three';
-import type { WebGLCubeRenderTarget } from 'three';
+import type { PointLight, WebGLCubeRenderTarget } from 'three';
 import type { EnvironmentSnapshot, QualityLevel } from '../core/types';
 import type { LandscapeScene } from '../scenes/types';
 import { createRainAtmosphere, CLOUD_LIGHT_DIRECTION } from './RainAtmosphere';
 import { GroundContactShadows } from './GroundContactShadows';
 import { LandscapePostProcessing } from './LandscapePostProcessing';
 import { captureForestEnvironment } from './ForestEnvironment';
+import { CanopyLightField } from './CanopyLightField';
 import { drawingSize, QUALITY } from './quality';
 
 export class WorldRenderer {
@@ -17,8 +18,10 @@ export class WorldRenderer {
   readonly scene = new Scene();
   readonly camera = new PerspectiveCamera(49, 1, 0.12, 430);
   private readonly sky = createRainAtmosphere();
-  private readonly sun = new DirectionalLight('#c6d1d5', 0.32);
+  private readonly sun = new DirectionalLight('#c3d7e0', 0.80);
   private readonly contacts = new GroundContactShadows();
+  private readonly canopy = new CanopyLightField();
+  private readonly fireLights: readonly PointLight[];
   private readonly post: LandscapePostProcessing;
   private environment: WebGLCubeRenderTarget | undefined;
   private quality: QualityLevel;
@@ -30,9 +33,17 @@ export class WorldRenderer {
   private renderedElapsed = 0;
   private width = 1;
   private height = 1;
+  private lastCanopyShadow = -Infinity;
+  private lastFireShadow = -Infinity;
+  private canopyShadowUpdates = 0;
+  private fireShadowUpdates = 0;
 
   constructor(readonly canvas: HTMLCanvasElement, readonly landscape: LandscapeScene, quality: QualityLevel) {
     this.quality = quality;
+    const primaryFire = landscape.fireLight;
+    this.fireLights = primaryFire
+      ? [primaryFire, ...(landscape.fireLights ?? []).filter(light => light !== primaryFire)]
+      : landscape.fireLights ?? [];
     this.renderer = new WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance', alpha: false });
     this.renderer.outputColorSpace = SRGBColorSpace;
     this.renderer.toneMapping = AgXToneMapping;
@@ -41,8 +52,10 @@ export class WorldRenderer {
     this.renderer.info.autoReset = false;
     this.renderer.shadowMap.type = PCFShadowMap;
     this.renderer.shadowMap.autoUpdate = false;
-    this.scene.background = new Color('#435a65');
-    this.scene.fog = new FogExp2('#435a65', 0.015);
+    this.scene.background = new Color('#4d6874');
+    // Reflections retain only a light far veil; the main view integrates its
+    // shadowed, height-dependent mist once after the PBR scene.
+    this.scene.fog = new FogExp2('#4d6874', 0.003);
     this.scene.environmentIntensity = 1.55;
     this.scene.add(new HemisphereLight('#a6b4bc', '#484435', 0.10));
     // Keep the shadow volume over the visible foreground as well as the grove.
@@ -53,11 +66,15 @@ export class WorldRenderer {
     this.sun.shadow.normalBias = 0.008;
     this.sun.shadow.radius = 7;
     this.sun.shadow.intensity = 1;
+    this.sun.shadow.autoUpdate = false;
+    this.fireLights.forEach(light => { light.shadow.autoUpdate = false; });
     this.scene.add(this.sun, this.sun.target, landscape.group);
     this.camera.position.copy(landscape.cameraPosition);
     this.lookAt.copy(landscape.cameraTarget);
     this.camera.lookAt(this.lookAt);
-    this.post = new LandscapePostProcessing(this.renderer, this.scene, this.camera, quality);
+    this.canopy.applyTo(this.scene);
+    this.post = new LandscapePostProcessing(this.renderer, this.scene, this.camera, this.sun,
+      this.fireLights, this.canopy.texture, this.canopy.matrix, quality);
     landscape.setSceneDepth?.(this.post.depthField);
     this.setQuality(quality);
     this.rebuildEnvironment();
@@ -69,26 +86,61 @@ export class WorldRenderer {
   }
 
   rebuildEnvironment(): void {
-    // The local radiance capture must see the same contact field on initial
-    // construction and context restoration, including material shader hooks.
-    this.contacts.bake(this.renderer, this.scene, this.landscape.groundHeightAt);
     const oldEnvironment = this.environment;
-    // The local probe includes directional shadowing. Rebuild that cache
-    // before capture too, including after the old GPU context was lost.
-    this.renderer.shadowMap.needsUpdate = true;
+    // Static radiance must not depend on the wind's time when context loss
+    // happened. Capture the same rest pose and initial sky every time.
+    this.landscape.setEnvironmentCapture?.(true);
     this.sky.setEnvironmentCapture(true);
     try {
-      this.environment = captureForestEnvironment(this.renderer, this.scene,
-        this.sky.mesh, new Vector3(-.3, 1.7, -2.3));
+      this.contacts.bake(this.renderer, this.scene, this.landscape.groundHeightAt);
+      this.canopy.bake(this.renderer, this.scene);
+      this.canopy.setEnvironmentCapture(true);
+      // The probe already sees canopy geometry: do not bake the extra spatial
+      // sky estimate into it and then apply that estimate for a second time.
+      this.environment = this.captureEnvironment();
     } finally {
       this.sky.setEnvironmentCapture(false);
+      this.canopy.setEnvironmentCapture(false);
+      this.landscape.setEnvironmentCapture?.(false);
     }
     this.scene.environment = this.environment.texture;
     oldEnvironment?.dispose();
     this.scene.add(this.sky.mesh);
     this.landscape.invalidateRenderCaches?.();
     this.post.invalidate();
+    this.lastCanopyShadow = this.lastFireShadow = -Infinity;
+    this.sun.shadow.needsUpdate = true;
+    this.fireLights.forEach(light => { light.shadow.needsUpdate = true; });
     this.renderer.shadowMap.needsUpdate = true;
+  }
+
+  private captureEnvironment(): WebGLCubeRenderTarget {
+    // A quality switch does not recapture static IBL. Its eventual restoration
+    // must therefore use the same shadowed probe, even if live shadows are off.
+    const shadow = this.sun.shadow;
+    const previous = {
+      map: shadow.map, size: shadow.mapSize.clone(), cast: this.sun.castShadow,
+      enabled: this.renderer.shadowMap.enabled, needsUpdate: shadow.needsUpdate,
+      globalNeedsUpdate: this.renderer.shadowMap.needsUpdate,
+    };
+    shadow.map = null;
+    shadow.mapSize.set(1024, 1024);
+    this.sun.castShadow = this.renderer.shadowMap.enabled = true;
+    shadow.needsUpdate = this.renderer.shadowMap.needsUpdate = true;
+    try {
+      return captureForestEnvironment(this.renderer, this.scene,
+        this.sky.mesh, new Vector3(-.3, 1.7, -2.3));
+    } finally {
+      // Three allocates this lazily inside the capture's render call.
+      const temporary = shadow.map as typeof previous.map;
+      shadow.map = previous.map;
+      shadow.mapSize.copy(previous.size);
+      this.sun.castShadow = previous.cast;
+      this.renderer.shadowMap.enabled = previous.enabled;
+      shadow.needsUpdate = previous.needsUpdate;
+      this.renderer.shadowMap.needsUpdate = previous.globalNeedsUpdate;
+      if (temporary && temporary !== previous.map) temporary.dispose();
+    }
   }
 
   resize(width: number, height: number, dpr = window.devicePixelRatio): void {
@@ -113,6 +165,9 @@ export class WorldRenderer {
       this.sun.shadow.map = null;
       this.sun.shadow.mapSize.set(config.shadowSize, config.shadowSize);
     }
+    this.sun.shadow.needsUpdate = true;
+    this.fireLights.forEach(light => { light.shadow.needsUpdate = true; });
+    this.lastCanopyShadow = this.lastFireShadow = -Infinity;
     this.renderer.shadowMap.needsUpdate = true;
     this.landscape.setQuality(quality);
     this.post.setQuality(quality);
@@ -161,7 +216,27 @@ export class WorldRenderer {
       this.frameFence = null;
     }
     this.renderer.info.reset();
-    this.post.render();
+    // Broad tree shadows move slowly; the near fire needs a faster cadence.
+    // Each light owns its invalidation, including the two fire-light samples.
+    if (QUALITY[this.quality].shadows) {
+      if (frame.elapsed < this.lastCanopyShadow || this.lastCanopyShadow === -Infinity
+        || (frame.delta === 0 && frame.elapsed !== this.lastCanopyShadow)
+        || (this.landscape.movingCanopy && frame.elapsed - this.lastCanopyShadow >= 1 / 6)) {
+        this.sun.shadow.needsUpdate = true;
+        this.lastCanopyShadow = frame.elapsed;
+        this.canopyShadowUpdates += 1;
+        this.renderer.shadowMap.needsUpdate = true;
+      }
+      if (this.fireLights.length && (frame.elapsed < this.lastFireShadow
+        || frame.elapsed - this.lastFireShadow >= 1 / 10
+        || (frame.delta === 0 && frame.elapsed !== this.lastFireShadow))) {
+        this.fireLights.forEach(light => { light.shadow.needsUpdate = true; });
+        this.lastFireShadow = frame.elapsed;
+        this.fireShadowUpdates += 1;
+        this.renderer.shadowMap.needsUpdate = true;
+      }
+    }
+    this.post.render(frame);
     this.renderedElapsed = frame.elapsed;
     this.frameFence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
     gl.flush();
@@ -172,6 +247,9 @@ export class WorldRenderer {
     return { quality: this.quality, viewX: this.goal.x, viewY: this.goal.y, calls: this.renderer.info.render.calls, triangles: this.renderer.info.render.triangles,
       geometries: this.renderer.info.memory.geometries, textures: this.renderer.info.memory.textures,
       contactBakes: this.contacts.bakes, contactResolution: this.contacts.resolution,
+      canopyBakes: this.canopy.bakes,
+      canopyShadowUpdates: this.canopyShadowUpdates, fireShadowUpdates: this.fireShadowUpdates,
+      lastCanopyShadow: this.lastCanopyShadow, lastFireShadow: this.lastFireShadow,
       deferredFrames: this.deferredFrames, renderedElapsed: this.renderedElapsed,
       drawingWidth: this.canvas.width, drawingHeight: this.canvas.height,
       ...this.post.diagnostics(), ...this.landscape.diagnostics?.() };
@@ -185,6 +263,7 @@ export class WorldRenderer {
     this.sky.dispose();
     this.environment?.dispose();
     this.contacts.dispose();
+    this.canopy.dispose();
     this.post.dispose();
     this.sun.shadow.map?.dispose();
     this.sun.dispose();

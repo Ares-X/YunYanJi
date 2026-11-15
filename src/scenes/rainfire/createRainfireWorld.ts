@@ -28,12 +28,18 @@ export function createRainfireWorld(options: SceneOptions): LandscapeScene {
   group.add(fire.group, water.mesh, rain.group);
   // Local fire shadows exclude the distant grove; the forest already splits
   // its nearby opaque geometry from the far canopy before batching.
-  group.traverse(object => { if (object instanceof Mesh && object.castShadow) object.layers.enable(2); });
+  group.traverse(object => {
+    if (object instanceof Mesh && object.castShadow && object.userData.fireShadow !== false) object.layers.enable(2);
+  });
   let disposed = false;
   return {
     group,
+    fireLight: fire.light,
+    fireLights: fire.lights,
+    movingCanopy: true,
     groundHeightAt: landscape.height,
     setSceneDepth: field => fire.setSceneDepth(field),
+    setEnvironmentCapture: enabled => forest.setEnvironmentCapture(enabled),
     cameraPosition: new Vector3(1, landscape.height(1, 4.5) + 1.25, 4.5),
     cameraTarget: new Vector3(-.4, .95, -4),
     portraitCameraPosition: new Vector3(.30, landscape.height(.30, 4.4) + 1.28, 4.4),
@@ -46,6 +52,7 @@ export function createRainfireWorld(options: SceneOptions): LandscapeScene {
     }),
     update(frame: EnvironmentSnapshot): void {
       if (disposed) return;
+      forest.update(frame);
       fire.update(frame);
       rain.update(frame);
       water.update(frame);
@@ -59,6 +66,7 @@ export function createRainfireWorld(options: SceneOptions): LandscapeScene {
     dispose(): void {
       if (disposed) return;
       disposed = true;
+      forest.dispose();
       water.disposeTargets();
       const geometries = new Set<BufferGeometry>();
       const materials = new Set<Material>();

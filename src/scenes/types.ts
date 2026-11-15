@@ -1,4 +1,4 @@
-import type { Group, Vector3 } from 'three';
+import type { Group, PointLight, Vector3 } from 'three';
 import type { EnvironmentSnapshot, QualityLevel } from '../core/types';
 import type { SceneDepthField } from '../render/SurfaceOcclusion';
 
@@ -6,6 +6,12 @@ export interface LandscapeScene {
   readonly group: Group;
   readonly cameraPosition: Vector3;
   readonly cameraTarget: Vector3;
+  /** The same radiance source lights surfaces, smoke and the surrounding mist. */
+  readonly fireLight?: PointLight;
+  readonly fireLights?: readonly PointLight[];
+  readonly movingCanopy?: boolean;
+  /** Freeze procedural deformation while capturing static local illumination. */
+  setEnvironmentCapture?(enabled: boolean): void;
   /** Optional composition authored for narrow screens, in scene world units. */
   readonly portraitCameraPosition?: Vector3;
   readonly portraitCameraTarget?: Vector3;

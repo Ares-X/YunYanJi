@@ -42,11 +42,17 @@ jobs:
         run: npx playwright install --with-deps --only-shell chromium
       - if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
         run: npm run test:browser
+      # Keep one reproducible default-seed view with the completed quality gate.
+      # This is review evidence; generated images never become shipped assets.
+      - if: ${{ github.event_name == 'pull_request' && !github.event.pull_request.draft }}
+        run: npm run capture -- --device all --seconds 0 --dpr 1 --skip-build --output test-results/visual-review
       - uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() && (failure() || (github.event_name == 'workflow_dispatch' && inputs.upload_evidence)) }}
+        if: ${{ !cancelled() && (failure() || (github.event_name == 'pull_request' && !github.event.pull_request.draft) || (github.event_name == 'workflow_dispatch' && inputs.upload_evidence)) }}
         with:
           name: browser-evidence
           # HTML reports already contain attached screenshots and failure traces.
-          path: playwright-report/
+          path: |
+            playwright-report/
+            test-results/visual-review/
           if-no-files-found: ignore
           retention-days: 3

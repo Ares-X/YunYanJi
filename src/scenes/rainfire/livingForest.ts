@@ -5,6 +5,10 @@ import {
 import { createRandom, randomBetween } from '../../core/random';
 import { BARK_WIDTH_METRES, BARK_HEIGHT_METRES, createBarkReliefSampler, createBarkSurface } from './barkSurface';
 import { growSpaceTree } from './forestGrowth';
+import { createForestWind } from './forestWind';
+import { forestFireShadowBounds, limitForestFireShadows } from './forestFireShadows';
+import { FIRE_X, FIRE_Z } from './rainLandscape';
+import type { EnvironmentSnapshot } from '../../core/types';
 
 const UP = new Vector3(0, 1, 0);
 const VIEWPOINT = new Vector3(1, 1.25, 4.5);
@@ -19,8 +23,15 @@ class Surface {
   colors: number[] = [];
   identity: number[] = [];
   rootHeights: number[] = [];
+  windRoots: number[] = [];
+  windAnchors: number[] = [];
   indices: number[] = [];
   rootHeight = 0;
+  rootX = 0;
+  rootZ = 0;
+  treeHeight = 1;
+  leafAnchor = new Vector3();
+  leafOpenness = 0;
   groundAt?: Height;
   barkRelief?: (u:number,v:number,identity:number)=>number;
   vertex(p: Vector3, u: number, v: number, color: Color, identity: number): number {
@@ -30,6 +41,8 @@ class Surface {
     this.colors.push(color.r, color.g, color.b);
     this.identity.push(identity);
     this.rootHeights.push(this.rootHeight);
+    this.windRoots.push(this.rootX, this.rootHeight, this.rootZ, this.treeHeight);
+    this.windAnchors.push(this.leafAnchor.x, this.leafAnchor.y, this.leafAnchor.z, this.leafOpenness);
     return at;
   }
   triangle(a: number, b: number, c: number): void { this.indices.push(a, b, c); }
@@ -40,6 +53,8 @@ class Surface {
     g.setAttribute('color', new Float32BufferAttribute(this.colors, 3));
     g.setAttribute('aForestIdentity', new Float32BufferAttribute(this.identity, 1));
     g.setAttribute('aForestRootHeight', new Float32BufferAttribute(this.rootHeights, 1));
+    g.setAttribute('aForestWindRoot', new Float32BufferAttribute(this.windRoots, 4));
+    g.setAttribute('aForestWindAnchor', new Float32BufferAttribute(this.windAnchors, 4));
     g.setIndex(this.indices);
     g.computeVertexNormals();
     g.computeBoundingSphere();
@@ -150,7 +165,7 @@ function barkMaterial(seed:string): MeshStandardMaterial {
         vRoughnessMapUv+=barkOffset;`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>
         vBarkUv=uv*vec2(${1/BARK_WIDTH_METRES},${1/BARK_HEIGHT_METRES})+barkOffset;
-        vForestPosition=(modelMatrix*vec4(position,1.0)).xyz;
+        vForestPosition=(modelMatrix*vec4(transformed,1.0)).xyz;
         vBarkRootHeight=aForestRootHeight;`);
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>
@@ -190,20 +205,23 @@ function barkMaterial(seed:string): MeshStandardMaterial {
 
 function foliageMaterial(): MeshStandardMaterial {
   const material = new MeshStandardMaterial({ color: 0xffffff, vertexColors: true,
-    side: DoubleSide, roughness: .69, metalness: 0, dithering: true });
+    side: DoubleSide, roughness: .57, metalness: 0, dithering: true });
   material.name = 'living-forest-individual-leaves';
   material.onBeforeCompile = shader => {
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>
         attribute float aForestIdentity;
         varying vec2 vLeafUv;
-        varying float vLeafIdentity;`)
+        varying float vLeafIdentity;
+        varying float vLeafOpenness;`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>
-        vLeafUv=uv;vLeafIdentity=aForestIdentity;`);
+        vLeafUv=uv;vLeafIdentity=aForestIdentity;
+        vLeafOpenness=aForestWindAnchor.w;`);
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>
         varying vec2 vLeafUv;
-        varying float vLeafIdentity;`)
+        varying float vLeafIdentity;
+        varying float vLeafOpenness;`)
       .replace('#include <color_fragment>', /* glsl */ `
         #include <color_fragment>
         float span=abs(vLeafUv.x-.5);
@@ -211,22 +229,40 @@ function foliageMaterial(): MeshStandardMaterial {
         float midrib=1.0-smoothstep(.008,.008+aa,span);
         float ribs=abs(fract(vLeafUv.y*9.0-span*4.7+vLeafIdentity*.7)-.5);
         float veins=(1.0-smoothstep(.018,.018+aa*2.0,ribs))*(1.0-span*1.5);
-        diffuseColor.rgb*=.82+vLeafUv.y*.20+midrib*.17+veins*.055;
+        diffuseColor.rgb*=.80+vLeafUv.y*.18+midrib*.11+veins*.045;
       `)
       .replace('#include <lights_fragment_end>', /* glsl */ `
         #include <lights_fragment_end>
+        // A leaf inside a crown sees less sky than one on its outside. This
+        // controls only indirect light; real shadows still control direct light.
+        float skyVisibility=mix(.28,1.0,vLeafOpenness);
+        reflectedLight.indirectDiffuse*=skyVisibility;
+        reflectedLight.indirectSpecular*=mix(.45,1.0,vLeafOpenness);
         #if NUM_DIR_LIGHTS > 0
-          float transmitted=pow(max(0.0,dot(-normal,directionalLights[0].direction)),2.0);
-          reflectedLight.directDiffuse+=diffuseColor.rgb*directionalLights[0].color*transmitted*.11;
+          float leafShadow=1.0;
+          #if defined(USE_SHADOWMAP) && NUM_DIR_LIGHT_SHADOWS > 0
+            DirectionalLightShadow leafSun=directionalLightShadows[0];
+            leafShadow=receiveShadow?getShadow(directionalShadowMap[0],leafSun.shadowMapSize,
+              leafSun.shadowIntensity,leafSun.shadowBias,leafSun.shadowRadius,vDirectionalShadowCoord[0]):1.0;
+          #endif
+          float transmitted=pow(max(0.0,dot(-geometryNormal,directionalLights[0].direction)),1.5);
+          float forwardScatter=pow(max(0.0,dot(-geometryViewDir,directionalLights[0].direction)),3.0);
+          vec3 thinLeaf=diffuseColor.rgb*vec3(.86,1.16,.68);
+          reflectedLight.directDiffuse+=thinLeaf*directionalLights[0].color*leafShadow
+            *transmitted*(.19+forwardScatter*.12)*mix(.55,1.0,vLeafOpenness);
         #endif
       `);
   };
-  material.customProgramCacheKey = () => 'living-forest-leaf-v1';
+  material.customProgramCacheKey = () => 'living-forest-leaf-v2';
   return material;
 }
 
 function leaf(surface: Surface, root: Vector3, direction: Vector3, length: number,
   width: number, roll: number, color: Color, identity: number, detailed: boolean): void {
+  surface.leafAnchor.copy(root);
+  const heightFraction=Math.max(0,(root.y-surface.rootHeight)/surface.treeHeight);
+  const radial=Math.hypot(root.x-surface.rootX,root.z-surface.rootZ)/Math.max(1.2,surface.treeHeight*.29);
+  surface.leafOpenness=Math.max(.18,Math.min(1,.18+radial*.78+heightFraction*.38));
   const axis=direction.clone().normalize();
   let cross=axis.clone().cross(UP);
   if(cross.lengthSq()<.0001)cross=axis.clone().cross(new Vector3(0,0,1));
@@ -264,7 +300,11 @@ function tree(spec:TreeSpec,identity:number,wood:Surface,leaves:Surface,seed:str
   const distance=Math.hypot(spec.x-1,spec.z-4.5),near=distance<20,far=distance>48;
   const hero=Boolean(spec.young)&&(identity===5||identity===6||identity===9);
   const ground=heightAt(spec.x,spec.z)-.055;
-  wood.rootHeight=ground+.055;wood.groundAt=heightAt;
+  for(const surface of [wood,leaves]) {
+    surface.rootHeight=ground+.055;
+    surface.rootX=spec.x;surface.rootZ=spec.z;surface.treeHeight=spec.height;
+  }
+  wood.groundAt=heightAt;
   const growth=growSpaceTree(`${seed}/tree-${identity}`,{
     height:spec.height,radius:spec.radius,
     crownBase:spec.height*(spec.young?randomBetween(random,.19,.28):randomBetween(random,.34,.45)),
@@ -345,12 +385,15 @@ function tree(spec:TreeSpec,identity:number,wood:Surface,leaves:Surface,seed:str
 }
 
 /**
- * Mature mixed woodland, built as four opaque geometry batches. Individual
+ * Mature mixed woodland, built as six opaque geometry batches. Individual
  * folded leaves have centimetre-scale silhouettes; no repeated alpha cards
  * determine the near forest outline. All materials and geometry are owned by
  * the returned group and may be released by the scene's normal traversal.
  */
-export function buildLivingForest(seed:string,heightAt:Height):{group:Group;treeCount:number} {
+export function buildLivingForest(seed:string,heightAt:Height):{
+  group:Group;treeCount:number;update:(frame:EnvironmentSnapshot)=>void;
+  setEnvironmentCapture:(enabled:boolean)=>void;dispose:()=>void;
+} {
   const group=new Group();group.name='living-wet-woodland';
   const random=createRandom(`${seed}/living-forest-layout`);
   const specs:TreeSpec[]=[
@@ -381,28 +424,44 @@ export function buildLivingForest(seed:string,heightAt:Height):{group:Group;tree
     const height=randomBetween(random,16.0,28.0);
     specs.push({x,z,height,radius:height*randomBetween(random,.014,.022)});
   }
-  const nearWood=new Surface(),farWood=new Surface(),nearLeaves=new Surface(),farLeaves=new Surface();
+  const nearWood=new Surface(),middleWood=new Surface(),farWood=new Surface();
+  const nearLeaves=new Surface(),middleLeaves=new Surface(),farLeaves=new Surface();
   nearWood.barkRelief=createBarkReliefSampler(seed);
   specs.forEach((spec,i)=>{
-    const shadows=Math.hypot(spec.x+.8,spec.z+1.6)<14;
-    tree(spec,i+1,shadows?nearWood:farWood,shadows?nearLeaves:farLeaves,seed,heightAt);
+    const distance=Math.hypot(spec.x+.8,spec.z+1.6);
+    const wood=distance<14?nearWood:distance<36?middleWood:farWood;
+    const leaves=distance<14?nearLeaves:distance<36?middleLeaves:farLeaves;
+    tree(spec,i+1,wood,leaves,seed,heightAt);
   });
-  const bark=barkMaterial(seed),foliar=foliageMaterial();
+  const bark=barkMaterial(seed),foliar=foliageMaterial(),wind=createForestWind();
+  wind.install(bark);wind.install(foliar);
+  foliar.addEventListener('dispose',wind.dispose);
   const batches=[
-    {surface:nearWood,material:bark,name:'near-trunks-roots-branches',shadows:true},
-    {surface:farWood,material:bark,name:'distant-trunks-branches',shadows:false},
-    {surface:nearLeaves,material:foliar,name:'near-folded-leaves',shadows:true},
-    {surface:farLeaves,material:foliar,name:'distant-leaves',shadows:false},
+    {surface:nearWood,material:bark,name:'near-trunks-roots-branches',shadows:true,fire:true},
+    {surface:middleWood,material:bark,name:'middle-trunks-branches',shadows:true,fire:false},
+    {surface:farWood,material:bark,name:'distant-trunks-branches',shadows:false,fire:false},
+    {surface:nearLeaves,material:foliar,name:'near-folded-leaves',shadows:true,fire:true},
+    {surface:middleLeaves,material:foliar,name:'middle-folded-leaves',shadows:true,fire:false},
+    {surface:farLeaves,material:foliar,name:'distant-leaves',shadows:false,fire:false},
   ];
+  const fireBounds=forestFireShadowBounds(new Vector3(FIRE_X,heightAt(FIRE_X,FIRE_Z)+.006,FIRE_Z));
+  let fireShadowTriangles=0;
   for(const batch of batches) {
     const mesh=new Mesh(batch.surface.geometry(),batch.material);
     mesh.name=`living-forest-${batch.name}`;
     mesh.castShadow=batch.shadows;mesh.receiveShadow=true;
+    mesh.userData.fireShadow=batch.fire;
+    wind.attach(mesh);
+    if(batch.fire)fireShadowTriangles+=limitForestFireShadows(mesh,fireBounds);
     group.add(mesh);
   }
   group.userData.forest={trees:specs.length,
     triangles:batches.reduce((sum,batch)=>sum+batch.surface.indices.length/3,0),
-    shadowTriangles:(nearWood.indices.length+nearLeaves.indices.length)/3,
-    leafVertices:(nearLeaves.positions.length+farLeaves.positions.length)/3,drawCalls:4,generatedTextures:3};
-  return {group,treeCount:specs.length};
+    shadowTriangles:batches.reduce((sum,batch)=>sum+(batch.shadows?batch.surface.indices.length/3:0),0),
+    fireShadowTriangles,
+    fireShadowSourceTriangles:(nearWood.indices.length+nearLeaves.indices.length)/3,
+    leafVertices:(nearLeaves.positions.length+middleLeaves.positions.length+farLeaves.positions.length)/3,
+    drawCalls:6,generatedTextures:3};
+  return {group,treeCount:specs.length,update:wind.update,
+    setEnvironmentCapture:wind.setEnvironmentCapture,dispose:wind.dispose};
 }

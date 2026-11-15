@@ -5,6 +5,20 @@ async function state(page: Page) {
   return page.evaluate(() => window.__YUNYANJI__!.getState());
 }
 
+/** A still frame must finish refreshing both cached lights at its exact time. */
+async function settledLighting(page: Page, elapsed: number) {
+  await expect.poll(async () => {
+    const current = await state(page);
+    return {
+      rendered: Number(current.renderedElapsed),
+      canopy: Number(current.lastCanopyShadow),
+      fire: Number(current.lastFireShadow),
+    };
+  }, { timeout: 45_000, message: 'The final still frame must use shadows from the same simulation time' })
+    .toEqual({ rendered: elapsed, canopy: elapsed, fire: elapsed });
+  return state(page);
+}
+
 test('renders the rainy refuge and supports motion, sound and immersion', async ({ page }, testInfo) => {
   const errors: string[] = [];
   const requests: { url: string; type: string }[] = [];
@@ -22,18 +36,24 @@ test('renders the rainy refuge and supports motion, sound and immersion', async 
   await expect(page.locator('#scene-title')).toHaveText('雨歇之前');
   expect(Number(initial.triangles)).toBeGreaterThan(1000);
   expect(Number(initial.calls)).toBeGreaterThan(1);
-  // The initial frame also caches both six-face fire-shadow maps. Opaque
-  // depth is now a separate pass so occlusion only affects indirect light.
+  // The initial frame includes independent opaque depth and both six-face
+  // fire-shadow maps. Keep the incoming foundation's complete-frame budget.
   expect(Number(initial.calls)).toBeLessThan(230);
   expect(initial.contactBakes).toBe(1);
   expect(initial.opaqueDepth).toBe(true);
   expect(initial.indirectOcclusion).toBe(true);
+  expect(initial.canopyBakes).toBe(1);
+  expect(Number(initial.canopyShadowUpdates)).toBeGreaterThan(0);
+  expect(Number(initial.fireShadowUpdates)).toBeGreaterThan(0);
   expect(Number(initial.reflectionUpdates)).toBeGreaterThan(0);
   // Capture the frozen first frame before animation can queue software GPU work.
   // Pixel readback on software-only CI has a different budget from UI actions.
   await page.screenshot({ path: testInfo.outputPath('rainfire-world.png'), timeout: 45_000, animations: 'disabled', scale: 'css' });
   await testInfo.attach('rainfire-world', { path: testInfo.outputPath('rainfire-world.png'), contentType: 'image/png' });
-  expect((await state(page)).reflectionUpdates).toBe(initial.reflectionUpdates);
+  const stillInitial = await state(page);
+  expect(stillInitial.reflectionUpdates).toBe(initial.reflectionUpdates);
+  expect(stillInitial.canopyShadowUpdates).toBe(initial.canopyShadowUpdates);
+  expect(stillInitial.fireShadowUpdates).toBe(initial.fireShadowUpdates);
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
   expect(overflow).toBe(false);
   await expect(page.locator('#hint')).toHaveText('已暂停，点继续或起风');
@@ -62,10 +82,17 @@ test('renders the rainy refuge and supports motion, sound and immersion', async 
   // input actions retain their separate 15-second responsiveness limit.
   await expect.poll(async () => Number((await state(page)).frames), { timeout: 45_000 })
     .toBeGreaterThan(2);
+  await expect.poll(async () => {
+    const current = await state(page);
+    return Number(current.canopyShadowUpdates) > Number(initial.canopyShadowUpdates)
+      && Number(current.fireShadowUpdates) > Number(initial.fireShadowUpdates);
+  }, { timeout: 45_000, message: 'Wind must update both the moving canopy and local fire shadows' }).toBe(true);
   const moving = await state(page);
   expect(moving.paused).toBe(false);
-  // Those static shadow passes must not recur during normal weather playback.
-  expect(Number(moving.calls)).toBeLessThan(96);
+  // Moving foliage and the fire source now refresh shadows at separate bounded
+  // cadences; even a frame updating both lights retains a complete-frame budget.
+  expect(Number(moving.calls)).toBeLessThan(230);
+  expect(moving.canopyBakes).toBe(initial.canopyBakes);
   let previousViewX = Number(moving.viewX);
   for (const distance of [40, 20]) {
     await page.mouse.move(100, 400);
@@ -80,9 +107,14 @@ test('renders the rainy refuge and supports motion, sound and immersion', async 
   await expect.poll(async () => (await state(page)).audioState).toBe('playing');
   await page.getByRole('button', { name: '暂停', exact: true }).click();
   await expect.poll(async () => (await state(page)).audioContext).toBe('suspended');
-  const frozen = (await state(page)).elapsed;
+  const frozen = Number((await state(page)).elapsed);
+  const settled = await settledLighting(page, frozen);
   await page.waitForTimeout(250);
-  expect((await state(page)).elapsed).toBe(frozen);
+  const still = await state(page);
+  expect(still.elapsed).toBe(frozen);
+  expect(still.canopyShadowUpdates).toBe(settled.canopyShadowUpdates);
+  expect(still.fireShadowUpdates).toBe(settled.fireShadowUpdates);
+  expect(still.reflectionUpdates).toBe(settled.reflectionUpdates);
   await page.getByRole('button', { name: '继续', exact: true }).click();
   await expect.poll(async () => (await state(page)).audioState).toBe('playing');
 
@@ -100,7 +132,7 @@ test('renders the rainy refuge and supports motion, sound and immersion', async 
   expect(errors).toEqual([]);
 });
 
-test('previews settings, updates procedural rendering and releases resources', async ({ page }, testInfo) => {
+test('previews settings by keyboard, updates procedural rendering and releases resources', async ({ page }, testInfo) => {
   const errors: string[] = [];
   const requests: { url: string; type: string }[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
@@ -109,24 +141,31 @@ test('previews settings, updates procedural rendering and releases resources', a
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.goto('/?debug=1&seed=qa-rainfire');
   await expect(page.locator('#app')).toHaveAttribute('data-ready', 'true');
-  // Begin normal playback through visitor controls, then freeze scene rendering
-  // in settings while keeping its sound available for a volume preview.
+  // Exercise native keyboard activation here; the first scenario covers pointer
+  // activation of the same controls. This also avoids making keyboard access
+  // depend on Playwright's two compositor-frame mouse-stability check while a
+  // software GPU is still finishing the first frame. Keep the 15 s action limit.
+  // Begin playback, then freeze rendering in settings while retaining sound.
   await page.emulateMedia({ reducedMotion: 'no-preference' });
-  await page.getByRole('button', { name: '起风', exact: true }).click();
-  await page.getByRole('button', { name: '听雨', exact: true }).click();
-  await page.getByRole('button', { name: '设置', exact: true }).click();
+  for (const name of ['起风', '听雨', '设置']) {
+    const button = page.getByRole('button', { name, exact: true });
+    await expect(button).toBeVisible();
+    await expect(button).toBeEnabled();
+    await button.press('Enter');
+  }
   await expect(page.locator('#settings-dialog')).toBeVisible();
   await expect.poll(async () => (await state(page)).audioState).toBe('playing');
   await page.getByRole('slider', { name: '声音音量', exact: true }).press('Home');
   await page.getByRole('slider', { name: '声音音量', exact: true }).press('ArrowRight');
-  const beforeQuality = await state(page);
+  const beforeQuality = await settledLighting(page, Number((await state(page)).elapsed));
   expect(beforeQuality.audioVolume).toBe(0.01);
   expect(beforeQuality.suspended).toBe(true);
   expect(beforeQuality.paused).toBe(false);
   expect(beforeQuality.audioState).toBe('playing');
   await page.getByRole('combobox', { name: '画质', exact: true }).selectOption('low');
-  // A quality change schedules its static redraw on the next animation frame.
-  await expect.poll(async () => Number((await state(page)).reflectionUpdates))
+  // The UI action is bounded separately. Its static redraw may sit behind an
+  // already-submitted GPU frame, so use the established 45 s render budget.
+  await expect.poll(async () => Number((await state(page)).reflectionUpdates), { timeout: 45_000 })
     .toBeGreaterThan(Number(beforeQuality.reflectionUpdates));
   const afterQuality = await state(page);
   expect(afterQuality.quality).toBe('low');
@@ -136,6 +175,10 @@ test('previews settings, updates procedural rendering and releases resources', a
   expect(afterQuality.bloom).toBe(false);
   expect(afterQuality.geometries).toBe(beforeQuality.geometries);
   expect(afterQuality.contactBakes).toBe(beforeQuality.contactBakes);
+  expect(afterQuality.canopyBakes).toBe(beforeQuality.canopyBakes);
+  expect(afterQuality.canopyShadowUpdates).toBe(beforeQuality.canopyShadowUpdates);
+  expect(afterQuality.fireShadowUpdates).toBe(beforeQuality.fireShadowUpdates);
+  expect(afterQuality.elapsed).toBe(beforeQuality.elapsed);
   expect(afterQuality.reflectionSize).toBe(256);
   await page.getByLabel('雨量', { exact: true }).press('Home');
   // Two native keyboard increments exercise the control without queuing twenty
@@ -146,9 +189,14 @@ test('previews settings, updates procedural rendering and releases resources', a
   // needle coverage or leaving the reflection at its low-resolution target.
   const beforeHigh = await state(page);
   await page.getByRole('combobox', { name: '画质', exact: true }).selectOption('high');
-  await expect.poll(async () => Number((await state(page)).reflectionUpdates))
+  await expect.poll(async () => Number((await state(page)).reflectionUpdates), { timeout: 45_000 })
     .toBeGreaterThan(Number(beforeHigh.reflectionUpdates));
-  const highAgain = await state(page);
+  await expect.poll(async () => {
+    const current = await state(page);
+    return Number(current.canopyShadowUpdates) > Number(beforeHigh.canopyShadowUpdates)
+      && Number(current.fireShadowUpdates) > Number(beforeHigh.fireShadowUpdates);
+  }, { timeout: 45_000, message: 'Restoring high quality while still must rebuild both shadow maps' }).toBe(true);
+  const highAgain = await settledLighting(page, Number(beforeQuality.elapsed));
   expect(highAgain.quality).toBe('high');
   expect(highAgain.ambientOcclusion).toBe(true);
   expect(highAgain.indirectOcclusion).toBe(true);
@@ -156,8 +204,17 @@ test('previews settings, updates procedural rendering and releases resources', a
   expect(highAgain.bloom).toBe(true);
   expect(highAgain.reflectionSize).toBe(512);
   expect(highAgain.geometries).toBe(beforeQuality.geometries);
+  expect(highAgain.suspended).toBe(true);
+  expect(highAgain.elapsed).toBe(beforeQuality.elapsed);
+  expect(highAgain.contactBakes).toBe(beforeQuality.contactBakes);
+  expect(highAgain.canopyBakes).toBe(beforeQuality.canopyBakes);
+  expect(Number(highAgain.calls)).toBeLessThan(230);
   await page.screenshot({ path: testInfo.outputPath('settings.png'), timeout: 45_000, animations: 'disabled', scale: 'css' });
   await testInfo.attach('settings', { path: testInfo.outputPath('settings.png'), contentType: 'image/png' });
+  const highStill = await state(page);
+  expect(highStill.canopyShadowUpdates).toBe(highAgain.canopyShadowUpdates);
+  expect(highStill.fireShadowUpdates).toBe(highAgain.fireShadowUpdates);
+  expect(highStill.canopyBakes).toBe(highAgain.canopyBakes);
   await page.getByRole('button', { name: '重看此境' }).click();
   await expect(page.locator('#settings-dialog')).not.toBeVisible();
   // Capture reset diagnostics and stop rendering in the same browser task,
@@ -181,6 +238,10 @@ test('previews settings, updates procedural rendering and releases resources', a
 });
 
 test('starts still for reduced motion and recovers from WebGL context loss', async ({ page }, testInfo) => {
+  // This case rebuilds the world twice, changes rendering quality, then reads
+  // back two complete images. Budget that multi-stage software-GPU workload
+  // separately; individual input, recovery and pixel-readback limits remain.
+  test.setTimeout(180_000);
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
@@ -189,6 +250,14 @@ test('starts still for reduced motion and recovers from WebGL context loss', asy
   await expect(page.locator('#app')).toHaveAttribute('data-ready', 'true');
   expect((await state(page)).paused).toBe(true);
   expect((await state(page)).elapsed).toBe(0);
+  // A probe is cached across live-quality changes. Restoring at a different
+  // shadow resolution must preserve the same static indirect illumination.
+  const initialQuality = (await state(page)).quality;
+  await page.getByRole('button', { name: '设置', exact: true }).click();
+  await page.getByRole('combobox', { name: '画质', exact: true })
+    .selectOption(initialQuality === 'high' ? 'medium' : 'high');
+  await settledLighting(page, 0);
+  await page.getByRole('button', { name: '关闭设置' }).click();
   // Also restore a scene that has already evolved: animated fire/rain and the
   // cached sky environment must retain the same frozen lighting after loss.
   await page.emulateMedia({ reducedMotion: 'no-preference' });
@@ -196,16 +265,17 @@ test('starts still for reduced motion and recovers from WebGL context loss', asy
   await expect.poll(async () => Number((await state(page)).elapsed), { timeout: 45_000 }).toBeGreaterThan(2);
   await page.getByRole('button', { name: '暂停', exact: true }).click();
   const frozenAt = Number((await state(page)).elapsed);
-  await expect.poll(async () => Number((await state(page)).renderedElapsed), { timeout: 45_000 })
-    .toBeGreaterThanOrEqual(frozenAt);
+  await settledLighting(page, frozenAt);
   await page.evaluate(async () => { await document.fonts.ready; });
   await expect.poll(async () => Number((await state(page)).reflectionUpdates)).toBeGreaterThan(0);
   const before = await page.screenshot({
     path: testInfo.outputPath('before-restoration.png'), timeout: 45_000, animations: 'disabled', scale: 'css',
   });
   await testInfo.attach('before-restoration', { path: testInfo.outputPath('before-restoration.png'), contentType: 'image/png' });
-  const contactBakes = Number((await state(page)).contactBakes);
-  const reflectionUpdates = Number((await state(page)).reflectionUpdates);
+  const beforeLoss = await state(page);
+  const contactBakes = Number(beforeLoss.contactBakes);
+  const canopyBakes = Number(beforeLoss.canopyBakes);
+  const reflectionUpdates = Number(beforeLoss.reflectionUpdates);
   const supported = await page.evaluate(() => {
     const gl = document.querySelector('canvas')!.getContext('webgl2');
     const extension = gl?.getExtension('WEBGL_lose_context');
@@ -219,7 +289,11 @@ test('starts still for reduced motion and recovers from WebGL context loss', asy
   expect((await state(page)).contextLost).toBe(false);
   expect((await state(page)).paused).toBe(true);
   expect(Number((await state(page)).contactBakes)).toBe(contactBakes + 1);
+  expect(Number((await state(page)).canopyBakes)).toBe(canopyBakes + 1);
   expect(Number((await state(page)).reflectionUpdates)).toBeGreaterThan(reflectionUpdates);
+  const recovered = await settledLighting(page, frozenAt);
+  expect(Number(recovered.canopyShadowUpdates)).toBeGreaterThan(Number(beforeLoss.canopyShadowUpdates));
+  expect(Number(recovered.fireShadowUpdates)).toBeGreaterThan(Number(beforeLoss.fireShadowUpdates));
   const restored = await page.screenshot({ path: testInfo.outputPath('restored.png'), timeout: 45_000, animations: 'disabled', scale: 'css' });
   await testInfo.attach('restored', { path: testInfo.outputPath('restored.png'), contentType: 'image/png' });
   // Compare runtime captures of the same frozen scene. The central region omits
