@@ -96,7 +96,7 @@ export class GroundContactShadows {
       let cutout = false;
       if (object instanceof Mesh) {
         const entries = Array.isArray(object.material) ? object.material : [object.material];
-        entries.forEach((material) => materials.add(material));
+        if (!object.castShadow && object.receiveShadow) entries.forEach((material) => materials.add(material));
         // This inexpensive override pass has no UV/alpha sampling. Foliage
         // retains its correctly clipped directional shadow and screen-space AO.
         cutout = entries.some((material) => material.alphaTest > 0

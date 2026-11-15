@@ -42,6 +42,8 @@ npm run capture -- --device mobile --seed 林间-02 --output test-results/captur
 
 动态形态也需要实拍。`npm run capture -- --seconds 4 --output test-results/captures/after-motion` 通过真实的继续／暂停操作，在模拟时间达到 4 秒后冻结并截图。脚本会等最后一帧实际提交，避免捕获 GPU 仍在绘制的旧状态；报告同时记录请求时间和实际暂停时间。该选项允许 0–30 秒，不通过修改系统时间或伪造帧推进来取得图片。
 
+检查高像素密度显示器时，可加 `--dpr 2`，例如 `npm run capture -- --device desktop --dpr 2 --output test-results/captures/retina`。它模拟浏览器的显示像素比，仍受项目画质和总像素预算限制；报告记录实际 DPR 与绘制尺寸，输出 PNG 继续保持 CSS 视口尺寸。允许 1–3，默认沿用所选设备参数。
+
 ## 使用已安装的 Chrome 或现有 Chromium
 
 选择本机 Chrome 稳定版，无需注册账号或安装远程服务：

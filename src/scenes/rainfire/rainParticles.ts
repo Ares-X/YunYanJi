@@ -153,7 +153,9 @@ const fragmentShader = /* glsl */ `
   void main() {
     bool underRoof = vRainWorld.x > uShelter.x && vRainWorld.x < uShelter.z
       && vRainWorld.z > uShelter.y && vRainWorld.z < uShelter.w;
-    float roofHeight = 4.63 - (vRainWorld.z - uShelter.y) * 0.137;
+    vec2 roofUv=(vRainWorld.xz-uShelter.xy)/(uShelter.zw-uShelter.xy);
+    float roofHeight = 4.15 - (vRainWorld.z - uShelter.y) * 0.137
+      -sin(roofUv.x*3.14159265)*(.16+.24*sin(roofUv.y*3.14159265));
     if (underRoof && vRainWorld.y < roofHeight) discard;
     float sides = 1.0 - smoothstep(0.12, 0.50, abs(vRainUv.x - 0.5));
     float ends = smoothstep(0.0, 0.12, vRainUv.y)

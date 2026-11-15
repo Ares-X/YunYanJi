@@ -13,7 +13,52 @@ const contactBindings = new WeakMap<Material, ContactBinding>();
 
 /** The renderer owns the generated field; materials only sample its live handle. */
 export function setContactShadowField(material: Material, texture: Texture, bounds: Vector4): void {
-  const binding = contactBindings.get(material);
+  let binding = contactBindings.get(material);
+  // New scene materials keep their own surface shaders. Add only the shared
+  // indirect-light contact term, preserving their maps and custom attributes.
+  if (!binding && material instanceof MeshStandardMaterial) {
+    binding = { texture: { value: texture }, bounds: { value: bounds.clone() }, enabled: { value: 1 } };
+    contactBindings.set(material,binding);
+    const contact=binding,compile=material.onBeforeCompile.bind(material);
+    const key=material.customProgramCacheKey();
+    material.onBeforeCompile=(shader,renderer)=>{
+      compile(shader,renderer);
+      shader.uniforms.uYyjContactMap=contact.texture;
+      shader.uniforms.uYyjContactBounds=contact.bounds;
+      shader.vertexShader=shader.vertexShader
+        .replace('#include <common>',`#include <common>
+          varying vec3 vYyjContactPosition;
+          attribute float aYyjContactReceiver;
+          varying float vYyjContactReceiver;`)
+        .replace('#include <worldpos_vertex>',`#include <worldpos_vertex>
+          vec4 yyjContactWorld=vec4(transformed,1.0);
+          #ifdef USE_INSTANCING
+            yyjContactWorld=instanceMatrix*yyjContactWorld;
+          #endif
+          #ifdef USE_BATCHING
+            yyjContactWorld=batchingMatrix*yyjContactWorld;
+          #endif
+          vYyjContactPosition=(modelMatrix*yyjContactWorld).xyz;
+          vYyjContactReceiver=aYyjContactReceiver;`);
+      shader.fragmentShader=shader.fragmentShader
+        .replace('#include <common>',`#include <common>
+          uniform sampler2D uYyjContactMap;
+          uniform vec4 uYyjContactBounds;
+          varying vec3 vYyjContactPosition;
+          varying float vYyjContactReceiver;`)
+        .replace('#include <aomap_fragment>',`#include <aomap_fragment>
+          vec2 yyjContactUv=(vYyjContactPosition.xz-uYyjContactBounds.xy)/uYyjContactBounds.zw;
+          float yyjInside=step(0.0,yyjContactUv.x)*step(yyjContactUv.x,1.0)
+            *step(0.0,yyjContactUv.y)*step(yyjContactUv.y,1.0);
+          float yyjGround=1.0-smoothstep(.10,.85,vYyjContactPosition.y);
+          float yyjAmbient=1.0-texture2D(uYyjContactMap,clamp(yyjContactUv,0.0,1.0)).r
+            *yyjInside*yyjGround*vYyjContactReceiver*.34;
+          reflectedLight.indirectDiffuse*=yyjAmbient;
+          reflectedLight.indirectSpecular*=yyjAmbient;`);
+    };
+    material.customProgramCacheKey=()=> `${key}/ground-contact-v1`;
+    material.needsUpdate=true;
+  }
   if (!binding) return;
   binding.texture.value = texture;
   binding.bounds.value.copy(bounds);

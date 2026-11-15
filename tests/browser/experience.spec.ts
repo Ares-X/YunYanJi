@@ -22,7 +22,8 @@ test('renders the rainy refuge and supports motion, sound and immersion', async 
   await expect(page.locator('#scene-title')).toHaveText('雨歇之前');
   expect(Number(initial.triangles)).toBeGreaterThan(1000);
   expect(Number(initial.calls)).toBeGreaterThan(1);
-  expect(Number(initial.calls)).toBeLessThan(80);
+  // Initial rendering also caches all six local fire-shadow cube faces.
+  expect(Number(initial.calls)).toBeLessThan(135);
   expect(initial.contactBakes).toBe(1);
   expect(Number(initial.reflectionUpdates)).toBeGreaterThan(0);
   // Capture the frozen first frame before animation can queue software GPU work.
@@ -60,6 +61,8 @@ test('renders the rainy refuge and supports motion, sound and immersion', async 
     .toBeGreaterThan(2);
   const moving = await state(page);
   expect(moving.paused).toBe(false);
+  // Those static shadow passes must not recur during normal weather playback.
+  expect(Number(moving.calls)).toBeLessThan(80);
   let previousViewX = Number(moving.viewX);
   for (const distance of [40, 20]) {
     await page.mouse.move(100, 400);

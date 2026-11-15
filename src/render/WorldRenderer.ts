@@ -16,7 +16,7 @@ export class WorldRenderer {
   readonly scene = new Scene();
   readonly camera = new PerspectiveCamera(49, 1, 0.12, 430);
   private readonly sky = createRainAtmosphere();
-  private readonly sun = new DirectionalLight('#a7c5d3', 0.28);
+  private readonly sun = new DirectionalLight('#bfd1df', 0.72);
   private readonly contacts = new GroundContactShadows();
   private readonly post: LandscapePostProcessing;
   private environment: WebGLCubeRenderTarget | undefined;
@@ -35,23 +35,23 @@ export class WorldRenderer {
     this.renderer = new WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance', alpha: false });
     this.renderer.outputColorSpace = SRGBColorSpace;
     this.renderer.toneMapping = ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.10;
+    this.renderer.toneMappingExposure = 1.08;
     // Count nested reflection passes as part of the complete visible frame.
     this.renderer.info.autoReset = false;
     this.renderer.shadowMap.type = PCFShadowMap;
     this.renderer.shadowMap.autoUpdate = false;
-    this.scene.background = new Color('#31484e');
-    this.scene.fog = new FogExp2('#31484e', 0.023);
-    this.scene.environmentIntensity = 0.80;
-    this.scene.add(new HemisphereLight('#97afbd', '#1b211d', 0.055));
+    this.scene.background = new Color('#435a65');
+    this.scene.fog = new FogExp2('#435a65', 0.015);
+    this.scene.environmentIntensity = 1.25;
+    this.scene.add(new HemisphereLight('#a6b4bc', '#484435', 0.16));
     // Keep the shadow volume over the visible foreground as well as the grove.
     this.sun.target.position.set(-1, 0, -8);
     this.sun.position.copy(this.sun.target.position).addScaledVector(CLOUD_LIGHT_DIRECTION, 82);
     Object.assign(this.sun.shadow.camera, { left: -34, right: 34, top: 34, bottom: -34, near: 0.5, far: 142 });
     this.sun.shadow.bias = -0.00008;
     this.sun.shadow.normalBias = 0.035;
-    this.sun.shadow.radius = 2.0;
-    this.sun.shadow.intensity = 0.90;
+    this.sun.shadow.radius = 3.5;
+    this.sun.shadow.intensity = 0.75;
     this.scene.add(this.sun, this.sun.target, landscape.group);
     this.camera.position.copy(landscape.cameraPosition);
     this.lookAt.copy(landscape.cameraTarget);
@@ -91,7 +91,7 @@ export class WorldRenderer {
     this.post.setSize(size.width, size.height);
     this.camera.aspect = this.width / this.height;
     // Narrow screens can use an individual scene's authored portrait composition.
-    this.camera.fov = this.camera.aspect < 0.8 ? 54 : 49;
+    this.camera.fov = this.camera.aspect < 0.8 ? 53 : 47;
     this.camera.updateProjectionMatrix();
   }
 

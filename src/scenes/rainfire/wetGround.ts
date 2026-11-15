@@ -130,11 +130,16 @@ const fragmentShader = /* glsl */ `
       +reflectedAt(uv+blur)*.10+reflectedAt(uv-blur)*.10
       +reflectedAt(uv+vec2(blur.x,-blur.y))*.10
       +reflectedAt(uv+vec2(-blur.x,blur.y))*.10;
-    float amount=(.10+fresnel*.65)*(.72+broad.x*.28);
-    float sediment=.73+wetGradient(p*3.6+uSeed).x*.32;
-    vec3 surface=mix(color*sediment,reflection*vec3(.96,.98,.98),amount);
-    float bank=smoothstep(.001,.032,vWaterDepth);
-    gl_FragColor=vec4(surface,bank);
+    // A few centimetres of rainwater still reveal the actual soil underneath.
+    // Express reflection and depth-dependent absorption as a transparent layer
+    // rather than replacing the depression with an opaque green mirror.
+    float absorption=1.0-exp(-vWaterDepth*12.0);
+    float amount=fresnel+(1.0-fresnel)*absorption;
+    float sediment=.80+wetGradient(p*3.6+uSeed).x*.22;
+    vec3 surface=(reflection*vec3(.96,.98,.98)*fresnel
+      +color*sediment*(1.0-fresnel)*absorption)/max(amount,.0001);
+    float bank=smoothstep(.0005,.007,vWaterDepth);
+    gl_FragColor=vec4(surface,bank*amount);
     #include <tonemapping_fragment>
     #include <colorspace_fragment>
     #ifdef USE_FOG

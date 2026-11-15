@@ -1,6 +1,6 @@
 import { BackSide, Color, Mesh, ShaderMaterial, SphereGeometry, Vector3 } from 'three';
 
-export const CLOUD_LIGHT_DIRECTION = new Vector3(-28, 34, -22).normalize();
+export const CLOUD_LIGHT_DIRECTION = new Vector3(-22, 30, 18).normalize();
 
 /** An overcast late-evening sky; every density sample is evaluated in the shader. */
 export function createRainAtmosphere() {
@@ -10,10 +10,10 @@ export function createRainAtmosphere() {
     depthTest: false,
     uniforms: {
       uTime: { value: 0 },
-      uZenith: { value: new Color('#263e48') },
-      uCloudLight: { value: new Color('#71838a') },
-      uHaze: { value: new Color('#31484e') },
-      uGround: { value: new Color('#101b1d') },
+      uZenith: { value: new Color('#4e6476') },
+      uCloudLight: { value: new Color('#89979d') },
+      uHaze: { value: new Color('#435a65') },
+      uGround: { value: new Color('#202a26') },
     },
     vertexShader: /* glsl */ `
       varying vec3 vDirection;
@@ -58,10 +58,16 @@ export function createRainAtmosphere() {
         float wisps = fbm(cloudPosition * vec3(3.7, 2.1, 1.0) + broad * 1.2);
         float density = smoothstep(0.24, 0.77, broad * 0.76 + wisps * 0.24);
         vec3 radiance = mix(uZenith, uCloudLight, exp(-elevation * 3.5));
-        radiance *= 0.34 + 0.60 * (1.0 - density);
-        float breakInCloud = pow(max(dot(d, normalize(vec3(-0.7,0.3,-0.5))), 0.0), 8.0);
+        radiance *= 0.55 + 0.45 * (1.0 - density);
+        float breakInCloud = pow(max(dot(d, normalize(vec3(-0.55,0.75,0.45))), 0.0), 8.0);
         radiance += vec3(0.015, 0.021, 0.024) * breakInCloud * (1.0 - density);
-        radiance = mix(radiance, uHaze, exp(-elevation * 35.0) * 0.8);
+        // A broad opening above/behind the seated observer lights bark and
+        // leaf surfaces without introducing another point source or hard sun.
+        float openSky=pow(max(0.0,dot(d,normalize(vec3(.28,.68,.76)))),4.0);
+        radiance+=vec3(.09,.11,.12)*openSky*smoothstep(0.0,.25,d.y);
+        // Match terrain fog all the way through the low sky; an abrupt colour
+        // mismatch would expose the far height field as a clean horizon wall.
+        radiance = mix(radiance, uHaze, 1.0-smoothstep(.06,.42,elevation));
         if (d.y < 0.0) radiance = mix(uGround, uHaze, smoothstep(-0.22, 0.0, d.y));
         gl_FragColor = vec4(radiance, 1.0);
         #include <tonemapping_fragment>

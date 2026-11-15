@@ -47,12 +47,23 @@ const surfaces: Record<RainSurface, string> = {
     float mottle = rainFbm(p*3.1);
     float vein = rainNoise(p*vec3(4.8,12.0,6.2)+mottle*1.8);
     float fine = mix(.5,rainNoise(p*63.0),detail);
-    float quartz = smoothstep(.70,.83,rainNoise(p*18.0));
-    float moss = smoothstep(.56,.73,rainFbm(p*1.4));
-    diffuseColor.rgb *= .65+mottle*.62+(fine-.5)*.17+quartz*.12;
-    diffuseColor.rgb = mix(diffuseColor.rgb,diffuseColor.rgb*vec3(.76,.96,.68),moss*.65);
-    relief = (mottle-.5)*.024+(vein-.5)*.009+(fine-.5)*.0018;
-    roughnessChange = -.12+moss*.15+(fine-.5)*.18;
+    float mineralDetail=1.0-smoothstep(.002,.010,footprint);
+    float mineral=rainNoise(p*288.0+vein*2.0);
+    float quartz = smoothstep(.62,.83,mineral)*mineralDetail;
+    float darkGrain=(1.0-smoothstep(.20,.37,mineral))*mineralDetail;
+    float upward=abs(normalize(cross(dFdx(vRainSurface),dFdy(vRainSurface))).y);
+    float moss = smoothstep(.56,.73,rainFbm(p*2.4))*smoothstep(.21,.80,upward);
+    float wet=smoothstep(.29,.65,rainFbm(p*5.1+vec3(4.1,0.0,7.2)))*(1.0-moss*.7);
+    float lichen=smoothstep(.62,.76,rainNoise(p*18.0+vein*3.1))
+      *smoothstep(.54,.72,rainFbm(p*4.1))*detail;
+    float layers=sin(dot(p,vec3(6.1,20.3,2.8))+mottle*7.0);
+    diffuseColor.rgb *= (.55+mottle*.74+(fine-.5)*.30+quartz*.30-darkGrain*.25+layers*.035)
+      *mix(1.0,.67,wet);
+    diffuseColor.rgb = mix(diffuseColor.rgb,diffuseColor.rgb*vec3(.54,.70,.31),moss*.75);
+    diffuseColor.rgb=mix(diffuseColor.rgb,vec3(.18,.20,.14),lichen*.45);
+    relief = (mottle-.5)*.010+(vein-.5)*.0048+(fine-.5)*.0022
+      +(mineral-.5)*.0007*mineralDetail+layers*.0004;
+    roughnessChange = -.24*wet+moss*.20+(fine-.5)*.14+lichen*.12;
   `,
   bark: /* glsl */ `
     float weather = rainFbm(p*vec3(2.4,.48,2.4));
@@ -77,7 +88,7 @@ const surfaces: Record<RainSurface, string> = {
 export function createRainMaterial(kind: RainSurface, seed: string): MeshStandardMaterial {
   const palettes = {
     earth: { color: 0x3c4034, roughness: .82 },
-    stone: { color: 0x535957, roughness: .52 },
+    stone: { color: 0x73776d, roughness: .66 },
     bark: { color: 0x51483a, roughness: .84 },
     timber: { color: 0x463c2d, roughness: .78 },
   };
@@ -124,6 +135,6 @@ export function createRainMaterial(kind: RainSurface, seed: string): MeshStandar
         }
       `);
   };
-  material.customProgramCacheKey=()=>`rain-surface-v1/${kind}`;
+  material.customProgramCacheKey=()=>`rain-surface-v2/${kind}`;
   return material;
 }

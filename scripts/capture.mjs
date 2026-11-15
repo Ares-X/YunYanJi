@@ -11,6 +11,7 @@ const { values } = parseArgs({
     device: { type: 'string', default: 'all' },
     seed: { type: 'string', default: 'yunyanji-rainfire-01' },
     seconds: { type: 'string', default: '0' },
+    dpr: { type: 'string' },
     output: { type: 'string', default: 'test-results/captures' },
     'skip-build': { type: 'boolean', default: false },
     help: { type: 'boolean', short: 'h', default: false },
@@ -22,6 +23,7 @@ if (values.help) {
   --device all|desktop|mobile   Viewports to capture (default: all)
   --seed VALUE                  Reproducible landscape seed (default: yunyanji-rainfire-01)
   --seconds NUMBER              Let the scene animate before capture, 0–30 (default: 0)
+  --dpr NUMBER                  Emulate display pixel ratio, 1–3 (default: device profile)
   --output DIRECTORY            Destination (default: test-results/captures)
   --skip-build                  Reuse an already current dist/ build
 
@@ -37,6 +39,8 @@ The command starts and stops its own local preview server and browser.`);
 async function capture() {
   const seconds = Number(values.seconds);
   if (!Number.isFinite(seconds) || seconds < 0 || seconds > 30) throw new Error('--seconds must be between 0 and 30.');
+  const dpr = values.dpr === undefined ? undefined : Number(values.dpr);
+  if (dpr !== undefined && (!Number.isFinite(dpr) || dpr < 1 || dpr > 3)) throw new Error('--dpr must be between 1 and 3.');
   const root = fileURLToPath(new URL('..', import.meta.url));
   const output = resolve(root, values.output);
   const profiles = [
@@ -71,7 +75,8 @@ async function capture() {
     };
     for (const profile of profiles) {
       // A reduced-motion initial frame freezes weather without racing frame timing.
-      const context = await browser.newContext({ ...profile.options, reducedMotion: 'reduce' });
+      const context = await browser.newContext({ ...profile.options,
+        ...(dpr === undefined ? {} : { deviceScaleFactor: dpr }), reducedMotion: 'reduce' });
       try {
         const page = await context.newPage();
         const errors = [];
@@ -105,7 +110,8 @@ async function capture() {
         });
         const filename = `${profile.name}.png`;
         await page.screenshot({ path: resolve(output, filename), timeout: 45_000, animations: 'disabled', scale: 'css' });
-        report.captures.push({ device: profile.name, viewport: profile.options.viewport, file: filename, webgl, state, errors });
+        report.captures.push({ device: profile.name, viewport: profile.options.viewport,
+          devicePixelRatio: await page.evaluate(() => window.devicePixelRatio), file: filename, webgl, state, errors });
         await writeFile(resolve(output, 'capture.json'), `${JSON.stringify(report, null, 2)}\n`);
         console.log(`${profile.name}: ${resolve(output, filename)}`);
         if (errors.length > 0) throw new Error(`${profile.name}: browser errors:\n${errors.join('\n')}`);

@@ -6,7 +6,7 @@ import {
 import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { createRandom, randomBetween } from '../../core/random';
 import type { EnvironmentSnapshot, QualityLevel } from '../../core/types';
-import { createProceduralMaterial } from '../../render/materials/proceduralMaterials';
+import { createRainMaterial } from './rainMaterials';
 
 const TAU = Math.PI * 2;
 const STEPS: Record<QualityLevel, number> = { low: 32, medium: 64, high: 96 };
@@ -77,6 +77,9 @@ function logGeometry(seed: string, length: number, radius: number): BufferGeomet
   geometry.setAttribute('aFuelIdentity', new Float32BufferAttribute(identities, 1));
   geometry.setIndex(indices);
   geometry.computeVertexNormals(); geometry.computeBoundingSphere();
+  // Preserve each log's grain coordinates when the six pieces are combined.
+  geometry.setAttribute('aFuelPosition', geometry.getAttribute('position').clone());
+  geometry.setAttribute('aFuelNormal', geometry.getAttribute('normal').clone());
   return geometry;
 }
 
@@ -90,10 +93,11 @@ function fuelMaterial(time: { value: number }): MeshStandardMaterial {
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>
         attribute float aFuelRadius, aFuelIdentity;
+        attribute vec3 aFuelPosition, aFuelNormal;
         varying vec3 vFuelPosition, vFuelNormal;
         varying float vFuelRadius, vFuelIdentity;`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>
-        vFuelPosition = position; vFuelNormal = normal;
+        vFuelPosition = aFuelPosition; vFuelNormal = aFuelNormal;
         vFuelRadius = aFuelRadius; vFuelIdentity = aFuelIdentity;`);
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>
@@ -195,25 +199,31 @@ function ashBed(seed: string): Mesh {
 function stoneAndCoalGeometry(seed: string, coals: boolean): BufferGeometry {
   const random = createRandom(`${seed}/${coals ? 'coals' : 'hearth'}`);
   const pieces: BufferGeometry[] = [];
-  const count = coals ? 30 : 11;
+  const count = coals ? 30 : 10;
   for (let i = 0; i < count; i++) {
     const primitive = new IcosahedronGeometry(1, coals ? 1 : 3);
     const geometry = coals ? primitive : mergeVertices(primitive, 1e-5);
     if (!coals) primitive.dispose();
     const position = geometry.getAttribute('position');
     const phase = random() * TAU;
-    const sx = coals ? randomBetween(random, 0.035, 0.095) : randomBetween(random, 0.12, 0.19);
-    const sy = coals ? randomBetween(random, 0.022, 0.055) : randomBetween(random, 0.07, 0.12);
-    const sz = coals ? randomBetween(random, 0.033, 0.083) : randomBetween(random, 0.10, 0.18);
+    const sx = coals ? randomBetween(random, 0.035, 0.095) : randomBetween(random, 0.15, 0.24);
+    const sy = coals ? randomBetween(random, 0.022, 0.055) : randomBetween(random, 0.055, 0.095);
+    const sz = coals ? randomBetween(random, 0.033, 0.083) : randomBetween(random, 0.10, 0.23);
+    const colors:number[]=[];
+    const pigment=randomBetween(random,.72,1.14);
     for (let vertex = 0; vertex < position.count; vertex++) {
       const x = position.getX(vertex), y = position.getY(vertex), z = position.getZ(vertex);
-      const wear = 1 + Math.sin(x * 5 + y * 3 + phase) * 0.075 + Math.sin(z * 7 - y * 5) * 0.045;
-      position.setXYZ(vertex, x * sx * wear, y * sy * wear, z * sz * wear);
+      const wear = 1 + Math.sin(x * 5 + y * 3 + phase) * 0.115 + Math.sin(z * 7 - y * 5) * 0.055;
+      const fractured=coals?1:Math.min(1,.77/Math.max(.01,Math.abs(x*.71+y*.61-z*.35)),
+        .79/Math.max(.01,Math.abs(z*.80+y*.45-x*.37)));
+      position.setXYZ(vertex, x * sx * wear*fractured, y * sy * wear*fractured, z * sz * wear*fractured);
+      colors.push(pigment,pigment*(.97+Math.sin(phase)*.025),pigment*.92);
     }
-    const angle = coals ? random() * TAU : (i + random() * 0.25) / count * TAU;
+    const angle = coals ? random() * TAU : (i + random() * 0.50) / count * TAU;
     const radius = coals ? Math.sqrt(random()) * 0.46 : randomBetween(random, 0.66, 0.75);
     geometry.rotateY(random() * TAU);
-    geometry.translate(Math.cos(angle) * radius, sy * 0.65 + (coals ? 0.035 : 0.004), Math.sin(angle) * radius * 0.90);
+    geometry.translate(Math.cos(angle) * radius, sy * (coals?.65:.42) + (coals ? 0.035 : 0.004), Math.sin(angle) * radius * 0.90);
+    geometry.setAttribute('color',new Float32BufferAttribute(colors,3));
     geometry.computeVertexNormals();
     pieces.push(geometry);
   }
@@ -278,8 +288,8 @@ const volumeFragment = /* glsl */ `
     vec3 accumulated = vec3(0.0);
     vec3 firstLight = origin + ray * begin;
     bool foundLight = false;
-    float height = 1.19 + 0.11 * sin(uTime * 1.13 + uSeed.x)
-      + 0.07 * sin(uTime * 2.37 + uSeed.z);
+    float height = 0.82 + 0.10 * sin(uTime * 1.13 + uSeed.x)
+      + 0.06 * sin(uTime * 2.37 + uSeed.z);
     for (int sampleIndex = 0; sampleIndex < 96; sampleIndex++) {
       if (float(sampleIndex) >= uSteps || transmittance < 0.018) break;
       vec3 p = origin + ray * distanceAlongRay;
@@ -304,13 +314,13 @@ const volumeFragment = /* glsl */ `
         * smoothstep(0.19, 0.38, p.y)
         * (1.0 - smoothstep(height + 0.07, height + 0.18, p.y));
       float temperature = clamp(0.36 + fine * 0.53 + (micro - 0.5) * 0.76 - p.y * 0.08, 0.0, 1.0);
-      vec3 flameColor = mix(vec3(1.10, 0.055, 0.001), vec3(3.25, 0.83, 0.035), smoothstep(0.20, 0.75, temperature));
+      vec3 flameColor = mix(vec3(1.32, 0.066, 0.0012), vec3(3.24, 0.77, 0.030), smoothstep(0.20, 0.78, temperature));
       // Heat varies through the folds, so the pale core consists of short
       // irregular filaments instead of one smooth height-based gradient.
       float hotCore = smoothstep(0.74, 0.94, temperature) * reaction
         * (1.0 - smoothstep(0.43, 1.1, p.y));
-      flameColor = mix(flameColor, vec3(4.0, 2.0, 0.33), hotCore);
-      float fireAlpha = 1.0 - exp(-flame * stepLength * 8.4);
+      flameColor = mix(flameColor, vec3(3.8, 1.8, 0.32), hotCore);
+      float fireAlpha = 1.0 - exp(-flame * stepLength * 5.1);
 
       vec2 smokeCentre = uWind * max(0.0, p.y - 0.5) * 0.30;
       float smokeRadius = 0.16 + p.y * 0.08;
@@ -480,42 +490,65 @@ export function createCampfire(seed: string, quality: QualityLevel): Campfire {
     [0.17, 0.28, 0.02, -0.92, 0.18, 0.80, 0.075],
     [-0.02, 0.34, -0.06, 1.59, -0.11, 0.65, 0.064],
   ] as const;
+  const fuelPieces:BufferGeometry[]=[];
   placements.forEach(([x, y, z, yaw, lean, length, radius], index) => {
     const log = new Mesh(logGeometry(`${seed}/log/${index}`, length, radius), material);
     log.name = `charred-split-log-${index}`;
     log.position.set(x + (random() - 0.5) * 0.025, y, z);
     log.rotation.set((random() - 0.5) * 0.25, yaw, lean);
     log.castShadow = true; log.receiveShadow = true;
-    group.add(log);
+    log.updateMatrix();
+    log.geometry.applyMatrix4(log.matrix);
+    fuelPieces.push(log.geometry);
   });
-  const hearthMaterial = createProceduralMaterial('stone', `${seed}/hearth`);
-  hearthMaterial.color.set('#515452');
+  const fuelGeometry=mergeGeometries(fuelPieces,false)!;
+  fuelPieces.forEach(geometry=>geometry.dispose());
+  const fuel=new Mesh(fuelGeometry,material);
+  fuel.name='charred-split-log-batch';fuel.castShadow=fuel.receiveShadow=true;group.add(fuel);
+  const hearthMaterial = createRainMaterial('stone', `${seed}/hearth`);
+  hearthMaterial.vertexColors=true;
+  hearthMaterial.color.set('#68685e');
   const stones = new Mesh(stoneAndCoalGeometry(seed, false), hearthMaterial);
   stones.name = 'weathered-hearth-stones'; stones.castShadow = true; stones.receiveShadow = true;
   const coals = new Mesh(stoneAndCoalGeometry(seed, true), emberMaterial(time));
   coals.name = 'banked-ember-bed'; coals.castShadow = false; coals.receiveShadow = true;
   const volume = fireVolume(seed, time, wind, quality);
   const embers = sparks(seed, time, wind, quality);
-  const light = new PointLight(new Color('#ffb067'), 16, 17, 2);
-  light.name = 'campfire-light'; light.position.set(0, 0.67, 0);
-  // Its fixed position preserves coherent illumination; optional scene shadow
-  // policy must avoid drawing the entire distant forest into six cube faces.
-  light.castShadow = false;
-  group.add(stones, coals, volume, embers, light);
-  group.userData.generatedFire = { flameHeight: 1.4, hearthRadius: 0.86, fixedAssets: 0 };
+  const light = new PointLight(new Color('#ffbc82'), 6.8, 12, 2);
+  light.name = 'campfire-light'; light.position.set(0, 0.56, 0);
+  light.castShadow = quality !== 'low';
+  light.shadow.camera.near = .08;
+  light.shadow.camera.far = 9;
+  light.shadow.camera.layers.set(2);
+  light.shadow.bias = -.00016;
+  light.shadow.normalBias = .014;
+  light.shadow.radius = 10;
+  light.shadow.mapSize.setScalar(quality === 'high' ? 768 : 512);
+  const coalLight=new PointLight('#ff6625',.45,3.1,2);
+  coalLight.position.set(.08,.15,.12);
+  coalLight.name='ember-bounce';
+  group.add(stones, coals, volume, embers, light,coalLight);
+  group.userData.generatedFire = { flameHeight: .98, hearthRadius: 0.86, fixedAssets: 0 };
   const phase = random() * TAU;
   return {
     group,
     update(frame): void {
       time.value = frame.elapsed;
       wind.value.set(Math.max(-1.5, Math.min(1.5, frame.wind.x)), Math.max(-1.0, Math.min(1.0, frame.wind.z)));
-      light.intensity = 16 * (0.94 + 0.075 * Math.sin(frame.elapsed * 5.7 + phase)
+      light.intensity = 6.8 * (0.94 + 0.075 * Math.sin(frame.elapsed * 5.7 + phase)
         + 0.040 * Math.sin(frame.elapsed * 13.1 + phase * 2.3)
         + 0.025 * Math.sin(frame.elapsed * 21.7));
     },
     setQuality(next): void {
       (volume.material as ShaderMaterial).uniforms.uSteps!.value = STEPS[next];
       embers.geometry.setDrawRange(0, SPARKS[next]);
+      light.castShadow = next !== 'low';
+      const size = next === 'high' ? 768 : 512;
+      if (light.shadow.mapSize.x !== size) {
+        light.shadow.map?.dispose();
+        light.shadow.map = null;
+        light.shadow.mapSize.setScalar(size);
+      }
     },
   };
 }
