@@ -1,0 +1,120 @@
+:root {
+  color-scheme: dark;
+  font-family: "Songti SC", "Noto Serif CJK SC", "STSong", "SimSun", serif;
+  color: #eee6d9;
+  background: #101d23;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  --edge: clamp(24px, 4.6vw, 74px);
+  --muted: #b1bbb6;
+  --line: #d6d1bd28;
+}
+* { box-sizing: border-box; }
+html, body, #app { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+body { overscroll-behavior: none; }
+button, input, select { font: inherit; }
+button {
+  cursor: pointer; color: inherit; background: transparent; border: 0;
+  min-height: 40px; padding: 10px 12px; font-size: 12px; letter-spacing: .13em;
+  transition: color .2s, background .2s, opacity .3s; touch-action: manipulation;
+}
+button:hover { color: #fff3df; background: #d6d1bd0c; }
+button:disabled { cursor: default; opacity: .4; }
+button:focus-visible, select:focus-visible, input:focus-visible, canvas:focus-visible {
+  outline: 1px solid #dba970; outline-offset: 5px;
+}
+#landscape { display: block; width: 100%; height: 100%; touch-action: none; outline-offset: -4px !important; }
+.vignette {
+  position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(180deg, #07111435, transparent 18%, transparent 72%, #050b0e48);
+}
+.masthead {
+  position: absolute; top: max(30px, env(safe-area-inset-top)); left: var(--edge); right: var(--edge);
+  display: flex; justify-content: space-between; align-items: flex-start; pointer-events: none;
+}
+.brand, nav { pointer-events: auto; }
+.brand { text-shadow: 0 2px 10px #02090c; }
+.brand h1 { font-size: 23px; font-weight: 400; letter-spacing: .24em; margin: 0 0 12px; }
+.brand > span { font-size: 9px; letter-spacing: .35em; color: #b5bdb4; }
+nav { display: flex; gap: clamp(4px, 1.5vw, 25px); align-items: center; margin-top: -8px; }
+nav button { color: #d1d6ce; text-shadow: 0 2px 6px #02090c; }
+#sound { color: #e5ba87; }
+.scene-footer {
+  position: absolute; left: var(--edge); right: var(--edge); bottom: max(34px, env(safe-area-inset-bottom));
+  display: flex; align-items: flex-end; justify-content: space-between; gap: 20px;
+  text-shadow: 0 2px 8px #02080baa;
+}
+.scene-caption p { margin: 0 0 11px; color: #b0beb9; font-size: 10px; letter-spacing: .28em; }
+.scene-caption h2 { margin: 0 0 13px; color: #ece3d2; font-size: 25px; font-weight: 400; letter-spacing: .2em; }
+#hint { color: #a7b3ad; font-size: 10px; letter-spacing: .12em; }
+.scene-actions { display: flex; gap: 20px; align-items: center; padding-bottom: 1px; }
+.scene-actions button { color: #c3c7bc; font-size: 11px; }
+#gust { padding-right: 0; }
+#gust span { padding-left: 14px; color: #e7bd88; font-size: 17px; }
+#loading {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  flex-direction: column; gap: 18px; background: #101d23; color: #e0d7c8; z-index: 4;
+}
+#loading[hidden] { display: none; }
+#loading > span { font-size: 28px; letter-spacing: .35em; }
+#loading p { margin: 0; color: #91a09d; font-size: 12px; letter-spacing: .25em; line-height: 1.8; text-align: center; max-width: 28em; padding: 0 24px; }
+.notice {
+  position: absolute; bottom: 135px; left: 50%; transform: translateX(-50%) translateY(4px);
+  max-width: min(90vw, 480px); padding: 10px 18px; margin: 0;
+  background: #0b171bd9; border: 1px solid #87968a20; color: #d8d9cc;
+  font-size: 11px; line-height: 1.7; text-align: center; opacity: 0; pointer-events: none;
+  transition: opacity .2s, transform .2s; z-index: 7;
+}
+.notice.visible { opacity: 1; transform: translateX(-50%) translateY(0); }
+dialog {
+  width: min(420px, calc(100vw - 40px)); max-height: calc(100dvh - 60px);
+  padding: 28px 32px; border: 1px solid #b4ba9d2b; color: #e0dfd1;
+  background: #152126f5; box-shadow: 0 20px 100px #01060866; overflow: auto;
+}
+dialog::backdrop { background: #02090b65; backdrop-filter: blur(4px); }
+.dialog-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 22px; }
+.dialog-heading h2 { margin: 0; font-weight: 400; font-size: 23px; letter-spacing: .2em; }
+.dialog-heading button { color: #9da9a3; font-size: 11px; padding-right: 0; }
+.setting-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 25px;
+  padding: 17px 0; border-bottom: 1px solid var(--line); font-size: 13px; letter-spacing: .1em;
+}
+.setting-row select { border: 0; background: #152126; color: #d8dccf; padding: 7px; font-size: 12px; min-width: 100px; }
+.setting-row input { width: 170px; max-width: 58%; accent-color: #b5956c; }
+.settings-note { font-size: 11px; color: #a5afa8; line-height: 1.8; margin: 23px 0; letter-spacing: .08em; }
+.settings-actions { display: flex; justify-content: space-between; gap: 12px; margin-top: 28px; }
+.settings-actions button { border-bottom: 1px solid #aaa78c38; padding: 10px 0; color: #cbc6b3; font-size: 11px; }
+dialog .notice { position: static; transform: none; max-width: 100%; margin-top: 15px; }
+dialog .notice.visible { transform: none; }
+.brand, .scene-footer { transition: opacity .35s; }
+.immersive .brand, .immersive .scene-footer, .immersive nav button:not(#immerse) { opacity: 0; pointer-events: none; }
+.immersive .vignette { opacity: 0; }
+.immersive #immerse { opacity: .5; }
+.immersive #immerse:hover, .immersive #immerse:focus-visible { opacity: 1; }
+@media (max-width: 600px) {
+  :root { --edge: 23px; }
+  .masthead { top: max(25px, env(safe-area-inset-top)); }
+  .brand h1 { font-size: 21px; }
+  .brand > span { font-size: 8px; letter-spacing: .22em; }
+  nav { gap: 3px; }
+  nav button { padding: 10px 7px; font-size: 11px; }
+  .scene-footer { bottom: max(28px, env(safe-area-inset-bottom)); gap: 10px; }
+  .scene-caption h2 { font-size: 23px; }
+  .scene-caption p { font-size: 9px; }
+  #hint { font-size: 9px; letter-spacing: .05em; }
+  .scene-actions { gap: 4px; }
+  .scene-actions button { padding: 9px 8px; font-size: 10px; }
+  #gust span { padding-left: 6px; }
+  dialog { padding: 24px; }
+}
+@media (max-height: 480px) and (orientation: landscape) {
+  .masthead { top: 16px; }
+  .brand h1 { font-size: 20px; }
+  .brand > span { display: none; }
+  .scene-footer { bottom: 16px; }
+  .scene-caption h2 { font-size: 20px; margin-bottom: 0; }
+  .scene-caption p { margin-bottom: 7px; }
+  #hint { display: none; }
+}
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; } }

@@ -1,0 +1,52 @@
+name: Verify procedural foundation
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+  workflow_dispatch:
+    inputs:
+      upload_evidence:
+        description: Keep the browser report and screenshots for this run
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      # Draft iterations use local captures; ready PRs retain the full quality gate.
+      - if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+        run: npx playwright install --with-deps --only-shell chromium
+      - if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+        run: npm run test:browser
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() && (failure() || (github.event_name == 'workflow_dispatch' && inputs.upload_evidence)) }}
+        with:
+          name: browser-evidence
+          # HTML reports already contain attached screenshots and failure traces.
+          path: playwright-report/
+          if-no-files-found: ignore
+          retention-days: 3

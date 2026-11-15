@@ -1,7 +1,96 @@
 # 云烟集 · YunYanJi
 
-在诗里的风景中，停留片刻。
+**独处的风景。**
 
-An interactive collection of landscapes inspired by classical Chinese poetry.
+Procedural places to sit with rain, wind and fire.
 
-所有场景、材质与声音由代码生成。
+第一处风景叫「雨歇之前」。在林边的遮雨处，近旁有一堆还在燃烧的柴火，雨水沿棚边落下，湿地映着火光，远处的树林隐在雨雾里。可以转动视线、听雨，或者收起文字停留一会儿。
+
+项目已从古诗场景转向孤独的自然风景。当前只做这一处雨夜篝火，持续校准空间、材料、火焰和声音；画面与听感仍需实际体验验收，构建和测试通过不代表达到摄影写实。
+
+## 运行
+
+使用 Node.js 24：
+
+```bash
+npm ci
+npm run dev
+```
+
+生产构建与本地预览：
+
+```bash
+npm run build
+npm run preview
+```
+
+Vite 使用相对基础路径，可部署在静态网站子目录。无需后端、账号或 API key。
+
+## 体验
+
+- 拖动画面，向四周看；较大的横向拖动也会带起一阵风。
+- 「听雨」开启合成的风、雨、滴水和柴火声；声音默认关闭。
+- 「入境」收起文字，「显字」或 Escape 返回。
+- 「暂停」同时暂停画面和声音；「继续」或「起风」恢复。
+- 「设置」调整雨量、声音和画质，也可以重看或分享相同种子的风景。
+- 画面获得焦点时，空格起风，P 暂停。系统偏好减少动态效果时，从静止画面开始。
+
+## 全部由代码生成
+
+项目不使用固定贴图、模型、HDRI、天空盒、音频采样、视频或远程字体。树干、枝叶、地形、腐叶、木柴、石块和布棚由种子生成；火焰、雨线、涟漪和天空由几何与 shader 计算。土壤和树皮的颜色、法线、粗糙度来自运行时生成的关联数据，以 `DataTexture` 等 GPU 纹理供材质采样；环境光和倒影也在运行时捕获到纹理目标。声音通过 Web Audio 播放程序合成的 PCM。
+
+固定的种子和同一模拟时间可以重现风景。通过 `?seed=林间-02` 生成另一处；分享只保留风景种子，不带调试状态。
+
+## 当前实现
+
+| 部分 | 做法 |
+| --- | --- |
+| 空间 | 连续湿土地形、独立生成的成熟树干与不规则枝叶、风化石块、带下垂和拉绳的布棚 |
+| 地表 | 近景土壤有真实起伏网格，颜色、细尺度法线和粗糙度由关联数据生成；腐叶、碎枝、细砾与植被按共享分布落在实际表面上 |
+| 林下 | 随土岸高度布置的低矮灌丛与蕨类，冠下腐叶和碎枝形成前后遮挡 |
+| 火 | 劈柴与炭床、由不透明场景深度截断的体积火舌、稀疏火星、两处暖光与缓存的近处阴影 |
+| 雨 | 斜向雨线、地面溅水与水面涟漪，棚下遮挡范围与几何一致 |
+| 水 | 厘米级浅积水平缓衔接泥地，按视角与水深混合倒影和可见泥底；静止视角下缓存反射 |
+| 光 | 程序阴云先照亮树林，再捕获实际林内环境；地面接触遮蔽与屏幕空间 AO 只作用于间接照明，最后统一输出 HDR 辉光与 AgX 色调映射 |
+| 声音 | 远近雨层、地面与棚沿滴水、林间风、近处柴火爆裂和余烬气流 |
+| 生命周期 | 静止重绘、后台暂停、上下文恢复、画质切换、资源释放 |
+
+旧雪景模块保留为已归档的试作，未注册为可选择场景。当前雨林使用独立的 `livingForest` 生成器，不再从雪松关闭积雪后派生。项目不再按风、花、雪、月的十二诗境计划推进。
+
+## 本地检查和截图
+
+```bash
+npm run check
+npx playwright install chromium
+npm run capture
+npm run test:browser
+```
+
+已有 Chrome 时可以直接使用：
+
+```bash
+PLAYWRIGHT_CHROMIUM_CHANNEL=chrome npm run capture
+```
+
+也可设置 `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` 指向现有 Chromium。截图输出到 `test-results/captures/`，不上传或触发 GitHub Actions。先在本地反复看画面，完成一轮修改后再推送一次质量门。
+
+本地无 GPU 时可使用默认 SwiftShader；真实设备复核可设置 `PLAYWRIGHT_SOFTWARE_RENDERING=0`，并检查报告中的实际 WebGL renderer。软件截图不能证明手机或电脑的实际帧率。
+
+默认截图按 CSS 像素保存。检查高密度屏幕的实际细节时，使用 `npm run capture -- --device desktop --dpr 2 --scale device --output test-results/captures/retina`，得到 2880 × 1800 的截图。高画质允许最高 2 倍显示像素比，并设有 8,294,400 像素的绘制预算，相当于一幅 3840 × 2160 画面；中低档保持较小预算。截图尺寸与 WebGL 实际绘制尺寸是两回事，应同时查看报告中的 `drawingWidth` / `drawingHeight`。
+
+完整说明见 [浏览器验收](docs/browser-validation.md)。
+
+## 代码结构
+
+```text
+src/
+  core/       种子、时间与共享天气
+  scenes/     场景协议、注册表、雨夜篝火与可复用几何
+  render/     光照、相机、后处理、画质及 WebGL 生命周期
+  audio/      合成算法、声场与 AudioContext 生命周期
+  ui/         安静的文字与原生交互
+```
+
+开发约束见 [AGENTS.md](AGENTS.md)，具体分工见 [架构](docs/architecture.md)，当前构图与验收目标见 [美术方向](docs/art-direction.md)。
+
+开启 `?debug=1` 才会暴露只用于本地诊断的 `window.__YUNYANJI__`，正常界面没有技术面板。

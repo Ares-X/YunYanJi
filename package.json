@@ -1,0 +1,29 @@
+{
+  "name": "yunyanji",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Procedural places to sit with rain, wind and fire.",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:browser": "playwright test",
+    "capture": "node scripts/capture.mjs",
+    "check:assets": "node scripts/check-procedural-policy.mjs",
+    "check": "npm run check:assets && npm run typecheck && npm test && npm run build"
+  },
+  "dependencies": {
+    "three": "0.187.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "@types/node": "26.6.6",
+    "@types/three": "0.187.0",
+    "typescript": "7.0.2",
+    "vite": "8.3.8",
+    "vitest": "5.1.0"
+  }
+}
