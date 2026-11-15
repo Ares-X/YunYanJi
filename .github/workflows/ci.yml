@@ -39,7 +39,7 @@ jobs:
       - run: npm run check
       # Draft iterations use local captures; ready PRs retain the full quality gate.
       - if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install --with-deps --only-shell chromium
       - if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
         run: npm run test:browser
       - uses: actions/upload-artifact@v4

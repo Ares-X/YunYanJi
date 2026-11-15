@@ -92,6 +92,8 @@ npm run test:browser
 
 `ready_for_review` 已显式加入触发事件，因此草稿转为正式 PR 后不会漏掉浏览器验收。同一分支的新运行会取消尚未完成的旧运行。
 
+CI 只安装测试实际使用的 Chromium Headless Shell 与所需系统依赖，不再额外下载完整桌面 Chrome。截图单独允许 45 秒完成像素回读和编码，按 CSS 像素保存；交互动作仍使用 15 秒限制，不随截图预算放宽。
+
 GitHub 的 PR 路径过滤基于整个 PR 的差异：一个已经包含代码的正式 PR，即使最新提交只修改文档，也仍可能触发检查。这里保留正式检查，避免在没有核实前一版本通过的情况下跳过质量门。单独的文档 PR 和主分支纯文档推送可以完全跳过。若未来把本工作流设为必需状态检查，应同步评估路径过滤：GitHub 可能让未触发的必需检查保持 Pending；本次不修改仓库保护设置。[路径过滤规则](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#onpushpull_requestpull_request_targetpathspaths-ignore)
 
 正常成功运行不上传截图报告。浏览器失败时保留包含截图和 trace 的 HTML 报告；手动运行时勾选 `upload_evidence` 也会保存成功报告。保留期为 3 天，不重复上传报告中已有的附件。手动入口需要工作流文件先存在于默认分支，尚未合并的首个 PR 应通过正式 PR 触发完成验收。[工作流事件](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_dispatch)

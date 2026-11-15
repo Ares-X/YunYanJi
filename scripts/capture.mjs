@@ -86,7 +86,7 @@ async function capture() {
           return { renderer: gl.getParameter(gl.RENDERER), source: 'RENDERER' };
         });
         const filename = `${profile.name}.png`;
-        await page.screenshot({ path: resolve(output, filename), animations: 'disabled', scale: 'css' });
+        await page.screenshot({ path: resolve(output, filename), timeout: 45_000, animations: 'disabled', scale: 'css' });
         report.captures.push({ device: profile.name, viewport: profile.options.viewport, file: filename, webgl, state, errors });
         await writeFile(resolve(output, 'capture.json'), `${JSON.stringify(report, null, 2)}\n`);
         console.log(`${profile.name}: ${resolve(output, filename)}`);

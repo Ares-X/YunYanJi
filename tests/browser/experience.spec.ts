@@ -23,7 +23,8 @@ test('renders a procedural scene, supports interaction and releases its resource
   const frozen = (await state(page)).elapsed;
   await page.waitForTimeout(250);
   expect((await state(page)).elapsed).toBe(frozen);
-  await page.screenshot({ path: testInfo.outputPath('courtyard.png') });
+  // Pixel readback on software-only CI has a different budget from UI actions.
+  await page.screenshot({ path: testInfo.outputPath('courtyard.png'), timeout: 45_000, animations: 'disabled', scale: 'css' });
   await testInfo.attach('courtyard', { path: testInfo.outputPath('courtyard.png'), contentType: 'image/png' });
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
   expect(overflow).toBe(false);
@@ -76,7 +77,7 @@ test('renders a procedural scene, supports interaction and releases its resource
   // redundant WebGL redraws on a software-only runner.
   for (let i = 0; i < 2; i++) await page.getByLabel('雪量', { exact: true }).press('ArrowRight');
   expect((await state(page)).snow).toBe(0.02);
-  await page.screenshot({ path: testInfo.outputPath('settings.png'), timeout: 45_000 });
+  await page.screenshot({ path: testInfo.outputPath('settings.png'), timeout: 45_000, animations: 'disabled', scale: 'css' });
   await testInfo.attach('settings', { path: testInfo.outputPath('settings.png'), contentType: 'image/png' });
   await page.getByRole('button', { name: '重看此境' }).click();
   await expect(page.locator('#settings-dialog')).not.toBeVisible();
@@ -117,7 +118,7 @@ test('starts still for reduced motion and recovers from WebGL context loss', asy
   expect((await state(page)).contextLost).toBe(false);
   expect((await state(page)).paused).toBe(true);
   expect(Number((await state(page)).contactBakes)).toBe(contactBakes + 1);
-  await page.screenshot({ path: testInfo.outputPath('restored.png') });
+  await page.screenshot({ path: testInfo.outputPath('restored.png'), timeout: 45_000, animations: 'disabled', scale: 'css' });
   await testInfo.attach('restored', { path: testInfo.outputPath('restored.png'), contentType: 'image/png' });
   expect(errors).toEqual([]);
 });
