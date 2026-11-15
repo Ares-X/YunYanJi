@@ -50,7 +50,11 @@ test('renders the winter world and supports motion, audio and poem interaction',
   await page.emulateMedia({ reducedMotion: 'no-preference' });
   await page.getByRole('button', { name: '起风', exact: true }).click();
   await expect.poll(async () => Number((await state(page)).gust)).toBeGreaterThan(0.005);
-  await expect.poll(async () => Number((await state(page)).frames)).toBeGreaterThan(2);
+  // A submitted frame now waits for the previous GPU frame to finish. This is
+  // a rendering-liveness check, with the same software-GPU budget as readback;
+  // input actions retain their separate 15-second responsiveness limit.
+  await expect.poll(async () => Number((await state(page)).frames), { timeout: 45_000 })
+    .toBeGreaterThan(2);
   const moving = await state(page);
   expect(moving.paused).toBe(false);
   let previousViewX = Number(moving.viewX);

@@ -66,7 +66,7 @@ async function start(): Promise<() => void> {
     raf = requestAnimationFrame(frame);
   };
 
-  const syncPlayback = () => {
+  const syncPlayback = (redraw = true) => {
     cancelAnimationFrame(raf);
     cancelAnimationFrame(stillRaf);
     raf = 0;
@@ -75,7 +75,7 @@ async function start(): Promise<() => void> {
     void audio.setSuspended(audioSuspended()).catch(() => ui.notify('声音暂时中断，可重新开启。'));
     ui.setPaused(manualPause);
     if (!suspended() && world && prepared) raf = requestAnimationFrame(frame);
-    else scheduleStill();
+    else if (redraw) scheduleStill();
   };
 
   const triggerGust = (direction = 1, strength = 1) => {
@@ -153,11 +153,15 @@ async function start(): Promise<() => void> {
     if (event.code === 'Space') { event.preventDefault(); triggerGust(); }
     if (event.code === 'KeyP') { manualPause = !manualPause; syncPlayback(); }
   }, options);
-  document.addEventListener('visibilitychange', syncPlayback, options);
+  document.addEventListener('visibilitychange', () => syncPlayback(), options);
   reducedMotion.addEventListener('change', (event) => {
     weather.reducedMotion = event.matches;
-    if (event.matches) manualPause = true;
-    syncPlayback();
+    // Leaving reduced motion preserves manual pause and any pending settings
+    // redraw. The active loop already reads the updated preference.
+    if (event.matches) {
+      manualPause = true;
+      syncPlayback();
+    }
   }, options);
   window.addEventListener('resize', resize, options);
   coarsePointer.addEventListener('change', resize, options);
@@ -190,7 +194,7 @@ async function start(): Promise<() => void> {
         resize();
         renderStill();
         ui.setContextLost(false);
-        syncPlayback();
+        syncPlayback(false);
       } catch {
         ui.fail('画面未能恢复，请刷新页面重试。');
       } finally { restoring = false; }
@@ -234,7 +238,7 @@ async function start(): Promise<() => void> {
     resize();
     await world.prepare();
     prepared = true;
-    if (!disposed) { renderStill(); ui.ready(); syncPlayback(); }
+    if (!disposed) { renderStill(); ui.ready(); syncPlayback(false); }
   } catch (error) {
     console.error('Unable to create YunYanJi landscape', error);
     if (!world) scene?.dispose();
