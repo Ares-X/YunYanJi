@@ -5,19 +5,21 @@ async function state(page: Page) {
   return page.evaluate(() => window.__YUNYANJI__!.getState());
 }
 
-test('renders the winter world and supports motion, audio and poem interaction', async ({ page }, testInfo) => {
+test('renders the rainy refuge and supports motion, sound and immersion', async ({ page }, testInfo) => {
   const errors: string[] = [];
   const requests: { url: string; type: string }[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
   page.on('request', (request) => requests.push({ url: request.url(), type: request.resourceType() }));
   await page.emulateMedia({ reducedMotion: 'reduce' });
-  await page.goto('/?debug=1&seed=qa-snow');
+  await page.goto('/?debug=1&seed=qa-rainfire');
   await expect(page.locator('#app')).toHaveAttribute('data-ready', 'true');
   const initial = await state(page);
   expect(initial.paused).toBe(true);
   expect(initial.elapsed).toBe(0);
   expect(initial.audioContext).toBe('uninitialized');
+  expect(initial.scene).toBe('rainfire');
+  await expect(page.locator('#scene-title')).toHaveText('雨歇之前');
   expect(Number(initial.triangles)).toBeGreaterThan(1000);
   expect(Number(initial.calls)).toBeGreaterThan(1);
   expect(Number(initial.calls)).toBeLessThan(80);
@@ -25,13 +27,13 @@ test('renders the winter world and supports motion, audio and poem interaction',
   expect(Number(initial.reflectionUpdates)).toBeGreaterThan(0);
   // Capture the frozen first frame before animation can queue software GPU work.
   // Pixel readback on software-only CI has a different budget from UI actions.
-  await page.screenshot({ path: testInfo.outputPath('winter-world.png'), timeout: 45_000, animations: 'disabled', scale: 'css' });
-  await testInfo.attach('winter-world', { path: testInfo.outputPath('winter-world.png'), contentType: 'image/png' });
+  await page.screenshot({ path: testInfo.outputPath('rainfire-world.png'), timeout: 45_000, animations: 'disabled', scale: 'css' });
+  await testInfo.attach('rainfire-world', { path: testInfo.outputPath('rainfire-world.png'), contentType: 'image/png' });
   expect((await state(page)).reflectionUpdates).toBe(initial.reflectionUpdates);
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
   expect(overflow).toBe(false);
   await expect(page.locator('#hint')).toHaveText('已暂停，点继续或起风');
-  for (const selector of ['.masthead', '.verse', '.scene-footer']) {
+  for (const selector of ['.masthead', '.scene-caption', '.scene-footer']) {
     const box = await page.locator(selector).boundingBox();
     const viewport = page.viewportSize()!;
     expect(box).not.toBeNull();
@@ -44,7 +46,8 @@ test('renders the winter world and supports motion, audio and poem interaction',
   await page.getByRole('button', { name: '入境', exact: true }).click();
   await expect(page.locator('#app')).toHaveClass(/immersive/);
   await expect(page.locator('.scene-footer')).toHaveAttribute('inert', '');
-  await page.getByRole('button', { name: '显字', exact: true }).click();
+  await expect(page.getByRole('button', { name: '显字', exact: true })).toBeVisible();
+  await page.keyboard.press('Escape');
   await expect(page.locator('#app')).not.toHaveClass(/immersive/);
 
   await page.emulateMedia({ reducedMotion: 'no-preference' });
@@ -67,7 +70,7 @@ test('renders the winter world and supports motion, audio and poem interaction',
     expect(viewX).toBeGreaterThan(previousViewX);
     previousViewX = viewX;
   }
-  await page.getByRole('button', { name: '声音 关', exact: true }).click();
+  await page.getByRole('button', { name: '听雨', exact: true }).click();
   await expect.poll(async () => (await state(page)).audioState).toBe('playing');
   await page.getByRole('button', { name: '暂停', exact: true }).click();
   await expect.poll(async () => (await state(page)).audioContext).toBe('suspended');
@@ -77,12 +80,12 @@ test('renders the winter world and supports motion, audio and poem interaction',
   await page.getByRole('button', { name: '继续', exact: true }).click();
   await expect.poll(async () => (await state(page)).audioState).toBe('playing');
 
-  await page.getByRole('button', { name: '诗文', exact: true }).click();
-  await expect(page.getByRole('dialog')).toBeVisible();
-  await expect(page.locator('#poem-text')).toContainText('未若柳絮因风起');
+  await page.getByRole('button', { name: '设置', exact: true }).click();
+  await expect(page.locator('#settings-dialog')).toBeVisible();
   await expect.poll(async () => (await state(page)).suspended).toBe(true);
-  await page.getByRole('button', { name: '关闭诗文' }).click();
-  await page.getByRole('button', { name: '声音 开', exact: true }).click();
+  await expect.poll(async () => (await state(page)).audioState).toBe('playing');
+  await page.getByRole('button', { name: '关闭设置' }).click();
+  await page.getByRole('button', { name: '静音', exact: true }).click();
   await expect.poll(async () => (await state(page)).audioState).toBe('off');
   await page.evaluate(() => window.__YUNYANJI__!.dispose());
 
@@ -98,13 +101,13 @@ test('previews settings, updates procedural rendering and releases resources', a
   page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
   page.on('request', (request) => requests.push({ url: request.url(), type: request.resourceType() }));
   await page.emulateMedia({ reducedMotion: 'reduce' });
-  await page.goto('/?debug=1&seed=qa-snow');
+  await page.goto('/?debug=1&seed=qa-rainfire');
   await expect(page.locator('#app')).toHaveAttribute('data-ready', 'true');
   // Begin normal playback through visitor controls, then freeze scene rendering
   // in settings while keeping its sound available for a volume preview.
   await page.emulateMedia({ reducedMotion: 'no-preference' });
   await page.getByRole('button', { name: '起风', exact: true }).click();
-  await page.getByRole('button', { name: '声音 关', exact: true }).click();
+  await page.getByRole('button', { name: '听雨', exact: true }).click();
   await page.getByRole('button', { name: '设置', exact: true }).click();
   await expect(page.locator('#settings-dialog')).toBeVisible();
   await expect.poll(async () => (await state(page)).audioState).toBe('playing');
@@ -122,14 +125,15 @@ test('previews settings, updates procedural rendering and releases resources', a
   const afterQuality = await state(page);
   expect(afterQuality.quality).toBe('low');
   expect(afterQuality.ambientOcclusion).toBe(false);
+  expect(afterQuality.bloom).toBe(false);
   expect(afterQuality.geometries).toBe(beforeQuality.geometries);
   expect(afterQuality.contactBakes).toBe(beforeQuality.contactBakes);
   expect(afterQuality.reflectionSize).toBe(256);
-  await page.getByLabel('雪量', { exact: true }).press('Home');
+  await page.getByLabel('雨量', { exact: true }).press('Home');
   // Two native keyboard increments exercise the control without queuing twenty
   // redundant WebGL redraws on a software-only runner.
-  for (let i = 0; i < 2; i++) await page.getByLabel('雪量', { exact: true }).press('ArrowRight');
-  expect((await state(page)).snow).toBe(0.02);
+  for (let i = 0; i < 2; i++) await page.getByLabel('雨量', { exact: true }).press('ArrowRight');
+  expect((await state(page)).rain).toBe(0.02);
   // Re-enabling MSAA/AO must recreate attachments without losing the generated
   // needle coverage or leaving the reflection at its low-resolution target.
   const beforeHigh = await state(page);
@@ -139,6 +143,7 @@ test('previews settings, updates procedural rendering and releases resources', a
   const highAgain = await state(page);
   expect(highAgain.quality).toBe('high');
   expect(highAgain.ambientOcclusion).toBe(true);
+  expect(highAgain.bloom).toBe(true);
   expect(highAgain.reflectionSize).toBe(512);
   expect(highAgain.geometries).toBe(beforeQuality.geometries);
   await page.screenshot({ path: testInfo.outputPath('settings.png'), timeout: 45_000, animations: 'disabled', scale: 'css' });
@@ -170,10 +175,19 @@ test('starts still for reduced motion and recovers from WebGL context loss', asy
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
   await page.emulateMedia({ reducedMotion: 'reduce' });
-  await page.goto('/?debug=1&seed=qa-snow');
+  await page.goto('/?debug=1&seed=qa-rainfire');
   await expect(page.locator('#app')).toHaveAttribute('data-ready', 'true');
   expect((await state(page)).paused).toBe(true);
   expect((await state(page)).elapsed).toBe(0);
+  // Also restore a scene that has already evolved: animated fire/rain and the
+  // cached sky environment must retain the same frozen lighting after loss.
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await page.getByRole('button', { name: '继续', exact: true }).click();
+  await expect.poll(async () => Number((await state(page)).elapsed), { timeout: 45_000 }).toBeGreaterThan(2);
+  await page.getByRole('button', { name: '暂停', exact: true }).click();
+  const frozenAt = Number((await state(page)).elapsed);
+  await expect.poll(async () => Number((await state(page)).renderedElapsed), { timeout: 45_000 })
+    .toBeGreaterThanOrEqual(frozenAt);
   await page.evaluate(async () => { await document.fonts.ready; });
   await expect.poll(async () => Number((await state(page)).reflectionUpdates)).toBeGreaterThan(0);
   const before = await page.screenshot({

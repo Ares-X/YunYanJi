@@ -6,7 +6,7 @@ export interface EnvironmentSnapshot {
   readonly elapsed: number;
   readonly delta: number;
   readonly wind: { readonly x: number; readonly y: number; readonly z: number; readonly strength: number };
-  readonly snowIntensity: number;
+  readonly precipitation: number;
   readonly gust: number;
   readonly reducedMotion: boolean;
 }

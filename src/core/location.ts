@@ -1,4 +1,4 @@
-export const DEFAULT_SEED = 'yunyanji-yongxue-01';
+export const DEFAULT_SEED = 'yunyanji-rainfire-01';
 
 /** Restrict shared seeds to stable, printable text; never insert URL data as HTML. */
 export function readSeed(search: string): string {

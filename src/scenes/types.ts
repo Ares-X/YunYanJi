@@ -1,7 +1,7 @@
 import type { Group, Vector3 } from 'three';
 import type { EnvironmentSnapshot, QualityLevel } from '../core/types';
 
-export interface PoemScene {
+export interface LandscapeScene {
   readonly group: Group;
   readonly cameraPosition: Vector3;
   readonly cameraTarget: Vector3;
@@ -18,13 +18,13 @@ export interface PoemScene {
 
 export interface SceneOptions { readonly seed: string; readonly quality: QualityLevel }
 
-export interface PoemDefinition {
+/** Kept for the archived snow experiment's reusable geometry modules. */
+export type PoemScene = LandscapeScene;
+
+export interface LandscapeDefinition {
   readonly id: string;
   readonly title: string;
   readonly subtitle: string;
-  readonly excerpt: string;
-  readonly source: string;
-  readonly text: string;
-  readonly note: string;
-  readonly create: (options: SceneOptions) => PoemScene;
+  readonly description: string;
+  readonly create: (options: SceneOptions) => LandscapeScene;
 }

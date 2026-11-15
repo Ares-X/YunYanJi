@@ -280,9 +280,9 @@ export function createSnowStream(seed: string, quality: QualityLevel, obstacles:
     mesh,
     update(frame): void {
       if (disposed) return;
-      if (frame.elapsed < elapsed || frame.snowIntensity !== lastSnow) invalidate();
+      if (frame.elapsed < elapsed || frame.precipitation !== lastSnow) invalidate();
       elapsed = frame.elapsed;
-      lastSnow = frame.snowIntensity;
+      lastSnow = frame.precipitation;
       material.uniforms.uTime!.value = elapsed;
       material.uniforms.uWind!.value = Math.max(0, Math.min(1, frame.wind.strength));
     },

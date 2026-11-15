@@ -9,7 +9,8 @@ import { chromiumLaunchOptions } from './browser-options.ts';
 const { values } = parseArgs({
   options: {
     device: { type: 'string', default: 'all' },
-    seed: { type: 'string', default: 'qa-snow' },
+    seed: { type: 'string', default: 'yunyanji-rainfire-01' },
+    seconds: { type: 'string', default: '0' },
     output: { type: 'string', default: 'test-results/captures' },
     'skip-build': { type: 'boolean', default: false },
     help: { type: 'boolean', short: 'h', default: false },
@@ -19,7 +20,8 @@ const { values } = parseArgs({
 if (values.help) {
   console.log(`Usage: npm run capture -- [options]
   --device all|desktop|mobile   Viewports to capture (default: all)
-  --seed VALUE                  Reproducible landscape seed (default: qa-snow)
+  --seed VALUE                  Reproducible landscape seed (default: yunyanji-rainfire-01)
+  --seconds NUMBER              Let the scene animate before capture, 0–30 (default: 0)
   --output DIRECTORY            Destination (default: test-results/captures)
   --skip-build                  Reuse an already current dist/ build
 
@@ -33,6 +35,8 @@ The command starts and stops its own local preview server and browser.`);
 }
 
 async function capture() {
+  const seconds = Number(values.seconds);
+  if (!Number.isFinite(seconds) || seconds < 0 || seconds > 30) throw new Error('--seconds must be between 0 and 30.');
   const root = fileURLToPath(new URL('..', import.meta.url));
   const output = resolve(root, values.output);
   const profiles = [
@@ -62,6 +66,7 @@ async function capture() {
         ? 'SwiftShader software rendering requested'
         : 'Browser default requested; hardware acceleration is not guaranteed',
       seed: values.seed,
+      requestedElapsed: seconds,
       captures: [],
     };
     for (const profile of profiles) {
@@ -75,6 +80,19 @@ async function capture() {
         await page.goto(url.href, { waitUntil: 'load', timeout: 45_000 });
         await page.locator('#app[data-ready="true"]').waitFor({ timeout: 60_000 });
         await page.evaluate(() => document.fonts.ready);
+        if (seconds > 0) {
+          await page.emulateMedia({ reducedMotion: 'no-preference' });
+          await page.getByRole('button', { name: '继续', exact: true }).click();
+          await page.waitForFunction((elapsed) => Number(window.__YUNYANJI__?.getState().elapsed) >= elapsed,
+            seconds, { timeout: 60_000 });
+          await page.getByRole('button', { name: '暂停', exact: true }).click();
+          // The final paused state can wait behind an in-flight GPU frame.
+          // Capture the submitted static redraw, not an earlier animation frame.
+          await page.waitForFunction(() => {
+            const snapshot = window.__YUNYANJI__?.getState();
+            return snapshot && Number(snapshot.renderedElapsed) >= Number(snapshot.elapsed);
+          }, undefined, { timeout: 45_000 });
+        }
         const state = await page.evaluate(() => window.__YUNYANJI__?.getState());
         if (!state || !(Number(state.triangles) > 0) || state.contextLost) throw new Error(`${profile.name}: no ready WebGL frame.`);
         const webgl = await page.evaluate(() => {

@@ -4,14 +4,14 @@ import type { QualityPreference } from './core/types';
 import { WeatherSimulation } from './core/WeatherSimulation';
 import { resolveQuality } from './render/quality';
 import { WorldRenderer } from './render/WorldRenderer';
-import { getPoem } from './scenes/registry';
+import { getLandscape } from './scenes/registry';
 import { Shell } from './ui/Shell';
 import './ui/styles.css';
 
 async function start(): Promise<() => void> {
   const root = document.querySelector<HTMLElement>('#app')!;
   const seed = readSeed(window.location.search);
-  const poem = getPoem();
+  const landscape = getLandscape();
   const weather = new WeatherSimulation(seed);
   const audio = new ProceduralAmbience(seed);
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
@@ -19,7 +19,7 @@ async function start(): Promise<() => void> {
   const events = new AbortController();
   let quality: QualityPreference = 'auto';
   let manualPause = reducedMotion.matches;
-  let activeDialog: 'poem' | 'settings' | null = null;
+  let activeDialog: 'settings' | null = null;
   let contextLost = false;
   let restoring = false;
   let disposed = false;
@@ -33,7 +33,7 @@ async function start(): Promise<() => void> {
   weather.reducedMotion = reducedMotion.matches;
   const suspended = () => manualPause || activeDialog !== null || document.hidden || contextLost || disposed;
   // Keep an already-enabled ambience audible while adjusting its volume.
-  const audioSuspended = () => manualPause || activeDialog === 'poem' || document.hidden || contextLost || disposed;
+  const audioSuspended = () => manualPause || document.hidden || contextLost || disposed;
 
   const renderStill = () => {
     return world && prepared && !contextLost && !disposed
@@ -87,21 +87,24 @@ async function start(): Promise<() => void> {
     ui.notify('风起了。', 1800);
   };
 
-  const ui = new Shell(root, poem, {
+  const ui = new Shell(root, landscape, {
     gust: triggerGust,
     togglePause: () => { manualPause = !manualPause; syncPlayback(); },
     toggleAudio: async () => {
       try {
         await audio.setEnabled(!audio.enabled);
         ui.setAudio(audio.enabled);
-        if (audio.enabled) ui.notify('听风穿过雪林。');
       } catch (error) {
         ui.setAudio(false);
         throw error;
       }
     },
     setVolume: (value) => audio.setVolume(value),
-    setSnow: (value) => { weather.setSnowIntensity(value); scheduleStill(); },
+    setRain: (value) => {
+      weather.setPrecipitation(value);
+      audio.update(weather.snapshot());
+      scheduleStill();
+    },
     setQuality: (value) => { quality = value; resize(); },
     reset: () => { weather.reset(); world?.resetView(); scheduleStill(); ui.notify('回到初见时。'); },
     share: async () => {
@@ -221,8 +224,8 @@ async function start(): Promise<() => void> {
   if (new URLSearchParams(location.search).get('debug') === '1') {
     // Explicit opt-in diagnostic readout, absent from the visitor interface.
     window.__YUNYANJI__ = {
-      getState: () => ({ seed, poem: poem.id, elapsed: weather.elapsed, gust: weather.snapshot().gust,
-        snow: weather.snowIntensity, paused: manualPause, suspended: suspended(), disposed, contextLost,
+      getState: () => ({ seed, scene: landscape.id, elapsed: weather.elapsed, gust: weather.snapshot().gust,
+        rain: weather.precipitation, paused: manualPause, suspended: suspended(), disposed, contextLost,
         frames: frameCount, lastRenderCpuMs: lastFrameMs,
         audioEnabled: audio.enabled, audioState: audio.state, audioContext: audio.contextState, audioVolume: audio.volume,
         ...world?.diagnostics() }),
@@ -232,7 +235,7 @@ async function start(): Promise<() => void> {
 
   let scene;
   try {
-    scene = poem.create({ seed, quality: resolveQuality(quality, root.clientWidth, coarsePointer.matches) });
+    scene = landscape.create({ seed, quality: resolveQuality(quality, root.clientWidth, coarsePointer.matches) });
     world = new WorldRenderer(ui.canvas, scene, resolveQuality(quality, root.clientWidth, coarsePointer.matches));
     resizeObserver.observe(root);
     resize();

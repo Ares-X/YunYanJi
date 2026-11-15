@@ -6,7 +6,7 @@ import { buildWinterTree } from './winterTree';
 export { createForestNeedleMaterial } from './forestNeedles';
 
 export type ForestTreeDetail = 'near' | 'mid' | 'far';
-export interface ForestTreeOptions { young?: boolean }
+export interface ForestTreeOptions { young?: boolean; snowCover?: boolean }
 export interface ForestTreeMaterials {
   bark: MeshStandardMaterial;
   snow: MeshStandardMaterial;
@@ -178,6 +178,7 @@ function snowBlanket(surface: Surface, curve: Curve, width: number, thickness: n
 /** Mature fir architecture in metres: an uneven leader and individual drooping boughs. */
 export function buildSnowPine(seed: string, materials: ForestTreeMaterials, detail: ForestTreeDetail = 'mid', options: ForestTreeOptions = {}): Group {
   const random = createRandom(`${seed}/snow-fir`);
+  const covered = options.snowCover !== false;
   const wood = new Surface();
   const foliage = new Surface();
   const snow = new Surface();
@@ -248,8 +249,8 @@ export function buildSnowPine(seed: string, materials: ForestTreeMaterials, deta
         );
         const width = Math.min(0.24, shootLength * 0.29) * randomBetween(random, 0.84, 1.18);
         const localPhase = angle * 2 + k * 1.7;
-        needleSpray(foliage, shootCurve, width, localPhase, limbDetail);
-        if (random() < snowLoad) {
+        needleSpray(foliage, shootCurve, width * (covered ? 1 : .68), localPhase, limbDetail);
+        if (covered && random() < snowLoad) {
           // Short, uneven loads sit on individual needle tufts. A long shoot is
           // never covered by one whole metre-long white spindle.
           const fragmentCount = limbDetail === 'near' && shootLength > 0.85 && random() < 0.34 ? 2 : 1;
@@ -268,15 +269,15 @@ export function buildSnowPine(seed: string, materials: ForestTreeMaterials, deta
       }
       const tipCurve: Curve = (u) => branchCurve(0.63 + u * 0.37);
       const tipWidth = Math.min(0.24, length * 0.095);
-      needleSpray(foliage, tipCurve, tipWidth, angle, limbDetail);
-      if (random() < snowLoad * 0.75) {
+      needleSpray(foliage, tipCurve, tipWidth * (covered ? 1 : .68), angle, limbDetail);
+      if (covered && random() < snowLoad * 0.75) {
         const from = randomBetween(random, 0.74, 0.85);
         const span = Math.min(0.15, 0.32 / length);
         const capCurve: Curve = (u) => branchCurve(from + span * u);
         const coverWidth = Math.min(0.13, tipWidth * 0.63, length * span * 0.47);
         snowBlanket(snow, capCurve, coverWidth, coverWidth * 0.80, angle, limbDetail);
       }
-      if (length > 1.1 && random() < snowLoad * 0.85) {
+      if (covered && length > 1.1 && random() < snowLoad * 0.85) {
         const count = limbDetail === 'far' ? 1 : Math.min(4, Math.max(2, Math.ceil(length * 0.54 / 0.43)));
         for (let deposit = 0; deposit < count; deposit++) {
           const from = 0.18 + deposit / count * 0.57 + randomBetween(random, -0.02, 0.02);
@@ -289,13 +290,14 @@ export function buildSnowPine(seed: string, materials: ForestTreeMaterials, deta
     }
   }
   const group = new Group();
-  group.name = `snow-fir-${detail}`;
+  group.name = `${covered ? 'snow' : 'wet'}-fir-${detail}`;
   let triangles = 0;
   for (const [surface, material, name] of [
     [wood, materials.bark, 'fir-trunk-and-boughs'],
     [foliage, materials.needles, 'fir-needle-sprays'],
     [snow, materials.snow, 'fir-settled-snow'],
   ] as const) {
+    if (surface.index.length === 0) continue;
     const geometry = surface.finish();
     const mesh = new Mesh(geometry, material);
     mesh.name = name;
@@ -304,7 +306,7 @@ export function buildSnowPine(seed: string, materials: ForestTreeMaterials, deta
     group.add(mesh);
     triangles += surface.index.length / 3;
   }
-  group.userData.generatedTree = { detail, young: Boolean(options.young), height, boughCount, sprayCount, triangles };
+  group.userData.generatedTree = { detail, young: Boolean(options.young), snowCover: covered, height, boughCount, sprayCount, triangles };
   return group;
 }
 

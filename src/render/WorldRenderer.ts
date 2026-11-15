@@ -5,20 +5,20 @@ import {
 } from 'three';
 import type { WebGLCubeRenderTarget } from 'three';
 import type { EnvironmentSnapshot, QualityLevel } from '../core/types';
-import type { PoemScene } from '../scenes/types';
-import { createWinterAtmosphere, WINTER_SUN_DIRECTION } from './WinterAtmosphere';
+import type { LandscapeScene } from '../scenes/types';
+import { createRainAtmosphere, CLOUD_LIGHT_DIRECTION } from './RainAtmosphere';
 import { GroundContactShadows } from './GroundContactShadows';
-import { WinterPostProcessing } from './WinterPostProcessing';
+import { LandscapePostProcessing } from './LandscapePostProcessing';
 import { drawingSize, QUALITY } from './quality';
 
 export class WorldRenderer {
   readonly renderer: WebGLRenderer;
   readonly scene = new Scene();
   readonly camera = new PerspectiveCamera(49, 1, 0.12, 430);
-  private readonly sky = createWinterAtmosphere();
-  private readonly sun = new DirectionalLight('#f7f5ed', 1.85);
+  private readonly sky = createRainAtmosphere();
+  private readonly sun = new DirectionalLight('#a7c5d3', 0.28);
   private readonly contacts = new GroundContactShadows();
-  private readonly post: WinterPostProcessing;
+  private readonly post: LandscapePostProcessing;
   private environment: WebGLCubeRenderTarget | undefined;
   private quality: QualityLevel;
   private readonly offset = new Vector2();
@@ -26,36 +26,37 @@ export class WorldRenderer {
   private readonly lookAt = new Vector3();
   private frameFence: WebGLSync | null = null;
   private deferredFrames = 0;
+  private renderedElapsed = 0;
   private width = 1;
   private height = 1;
 
-  constructor(readonly canvas: HTMLCanvasElement, readonly poem: PoemScene, quality: QualityLevel) {
+  constructor(readonly canvas: HTMLCanvasElement, readonly landscape: LandscapeScene, quality: QualityLevel) {
     this.quality = quality;
     this.renderer = new WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance', alpha: false });
     this.renderer.outputColorSpace = SRGBColorSpace;
     this.renderer.toneMapping = ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 0.94;
+    this.renderer.toneMappingExposure = 1.10;
     // Count nested reflection passes as part of the complete visible frame.
     this.renderer.info.autoReset = false;
     this.renderer.shadowMap.type = PCFShadowMap;
     this.renderer.shadowMap.autoUpdate = false;
-    this.scene.background = new Color('#9eafb8');
-    this.scene.fog = new FogExp2('#9eafb8', 0.0095);
-    this.scene.environmentIntensity = 0.52;
-    this.scene.add(new HemisphereLight('#dce8ef', '#b7bbb2', 0.08));
+    this.scene.background = new Color('#31484e');
+    this.scene.fog = new FogExp2('#31484e', 0.023);
+    this.scene.environmentIntensity = 0.80;
+    this.scene.add(new HemisphereLight('#97afbd', '#1b211d', 0.055));
     // Keep the shadow volume over the visible foreground as well as the grove.
     this.sun.target.position.set(-1, 0, -8);
-    this.sun.position.copy(this.sun.target.position).addScaledVector(WINTER_SUN_DIRECTION, 82);
+    this.sun.position.copy(this.sun.target.position).addScaledVector(CLOUD_LIGHT_DIRECTION, 82);
     Object.assign(this.sun.shadow.camera, { left: -34, right: 34, top: 34, bottom: -34, near: 0.5, far: 142 });
     this.sun.shadow.bias = -0.00008;
     this.sun.shadow.normalBias = 0.035;
     this.sun.shadow.radius = 2.0;
     this.sun.shadow.intensity = 0.90;
-    this.scene.add(this.sun, this.sun.target, poem.group);
-    this.camera.position.copy(poem.cameraPosition);
-    this.lookAt.copy(poem.cameraTarget);
+    this.scene.add(this.sun, this.sun.target, landscape.group);
+    this.camera.position.copy(landscape.cameraPosition);
+    this.lookAt.copy(landscape.cameraTarget);
     this.camera.lookAt(this.lookAt);
-    this.post = new WinterPostProcessing(this.renderer, this.scene, this.camera, quality);
+    this.post = new LandscapePostProcessing(this.renderer, this.scene, this.camera, quality);
     this.rebuildEnvironment();
     this.setQuality(quality);
   }
@@ -68,12 +69,15 @@ export class WorldRenderer {
     const generator = new PMREMGenerator(this.renderer);
     this.environment?.dispose();
     this.sky.setEnvironmentCapture(true);
-    try { this.environment = generator.fromScene(skyScene, 0.08, 0.1, 1000, { size: 256 }); }
-    finally { this.sky.setEnvironmentCapture(false); }
+    try {
+      this.environment = generator.fromScene(skyScene, 0.08, 0.1, 1000, { size: 256 });
+    } finally {
+      this.sky.setEnvironmentCapture(false);
+      generator.dispose();
+    }
     this.scene.environment = this.environment.texture;
-    generator.dispose();
     this.scene.add(this.sky.mesh);
-    this.poem.invalidateRenderCaches?.();
+    this.landscape.invalidateRenderCaches?.();
     this.contacts.bake(this.renderer, this.scene);
     this.post.invalidate();
     this.renderer.shadowMap.needsUpdate = true;
@@ -102,7 +106,7 @@ export class WorldRenderer {
       this.sun.shadow.mapSize.set(config.shadowSize, config.shadowSize);
     }
     this.renderer.shadowMap.needsUpdate = true;
-    this.poem.setQuality(quality);
+    this.landscape.setQuality(quality);
     this.post.setQuality(quality);
     this.resize(this.width, this.height);
   }
@@ -126,15 +130,15 @@ export class WorldRenderer {
     const ease = frame.reducedMotion ? 1 : 1 - Math.exp(-Math.max(frame.delta, 0.016) * 4);
     this.offset.lerp(this.goal, ease);
     const portrait = this.camera.aspect < 0.8;
-    this.camera.position.copy(portrait ? this.poem.portraitCameraPosition ?? this.poem.cameraPosition : this.poem.cameraPosition);
-    this.camera.position.x += this.offset.x * 0.55;
-    this.camera.position.y += this.offset.y * 0.18;
-    this.lookAt.copy(portrait ? this.poem.portraitCameraTarget ?? this.poem.cameraTarget : this.poem.cameraTarget);
-    this.lookAt.x += this.offset.x * 13;
-    this.lookAt.y += this.offset.y * 7;
+    this.camera.position.copy(portrait ? this.landscape.portraitCameraPosition ?? this.landscape.cameraPosition : this.landscape.cameraPosition);
+    this.camera.position.x += this.offset.x * 0.18;
+    this.camera.position.y += this.offset.y * 0.08;
+    this.lookAt.copy(portrait ? this.landscape.portraitCameraTarget ?? this.landscape.cameraTarget : this.landscape.cameraTarget);
+    this.lookAt.x += this.offset.x * 5;
+    this.lookAt.y += this.offset.y * 2.4;
     this.camera.lookAt(this.lookAt);
     this.sky.update(frame.elapsed);
-    this.poem.update(frame);
+    this.landscape.update(frame);
     const gl = this.renderer.getContext() as WebGL2RenderingContext;
     if (gl.isContextLost()) return false;
     if (this.frameFence) {
@@ -150,6 +154,7 @@ export class WorldRenderer {
     }
     this.renderer.info.reset();
     this.post.render();
+    this.renderedElapsed = frame.elapsed;
     this.frameFence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
     gl.flush();
     return true;
@@ -159,16 +164,16 @@ export class WorldRenderer {
     return { quality: this.quality, viewX: this.goal.x, viewY: this.goal.y, calls: this.renderer.info.render.calls, triangles: this.renderer.info.render.triangles,
       geometries: this.renderer.info.memory.geometries, textures: this.renderer.info.memory.textures,
       contactBakes: this.contacts.bakes, contactResolution: this.contacts.resolution,
-      deferredFrames: this.deferredFrames,
+      deferredFrames: this.deferredFrames, renderedElapsed: this.renderedElapsed,
       drawingWidth: this.canvas.width, drawingHeight: this.canvas.height,
-      ...this.post.diagnostics(), ...this.poem.diagnostics?.() };
+      ...this.post.diagnostics(), ...this.landscape.diagnostics?.() };
   }
 
   dispose(): void {
     const gl = this.renderer.getContext() as WebGL2RenderingContext;
     if (this.frameFence && !gl.isContextLost()) gl.deleteSync(this.frameFence);
     this.frameFence = null;
-    this.poem.dispose();
+    this.landscape.dispose();
     this.sky.dispose();
     this.environment?.dispose();
     this.contacts.dispose();

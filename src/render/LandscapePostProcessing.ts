@@ -1,6 +1,6 @@
 import {
   DataTexture, DepthFormat, DepthTexture, HalfFloatType, LinearSRGBColorSpace,
-  RepeatWrapping, RGBAFormat, UnsignedByteType, UnsignedIntType, WebGLRenderTarget,
+  RepeatWrapping, RGBAFormat, UnsignedByteType, UnsignedIntType, Vector2, WebGLRenderTarget,
 } from 'three';
 import type { Camera, Scene, WebGLRenderer } from 'three';
 import { SimplexNoise } from 'three/addons/math/SimplexNoise.js';
@@ -8,6 +8,7 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { createRandom } from '../core/random';
 import type { QualityLevel } from '../core/types';
 
@@ -25,7 +26,7 @@ function createDenoiseNoise(seed: string): DataTexture {
     }
   }
   const texture = new DataTexture(data, size, size, RGBAFormat, UnsignedByteType);
-  texture.name = 'generated-winter-ao-denoise';
+  texture.name = 'generated-landscape-ao-denoise';
   texture.wrapS = texture.wrapT = RepeatWrapping;
   texture.needsUpdate = true;
   return texture;
@@ -69,7 +70,7 @@ class SharedDepthGTAOPass extends GTAOPass {
   override render(renderer: WebGLRenderer, writeBuffer: WebGLRenderTarget,
     readBuffer: WebGLRenderTarget, deltaTime: number, maskActive: boolean): void {
     const depth = readBuffer.depthTexture;
-    if (!depth) throw new Error('Winter AO requires the beauty pass depth texture.');
+    if (!depth) throw new Error('Landscape AO requires the beauty pass depth texture.');
     // Composer can swap its buffers when quality/pass choices change. Avoid
     // rebinding every frame, which would needlessly invalidate shader programs.
     if (this.depthTexture !== depth) this.setGBuffer(depth);
@@ -85,20 +86,22 @@ class SharedDepthGTAOPass extends GTAOPass {
 }
 
 /**
- * A restrained, linear-light finish: main image -> local occlusion -> output.
+ * A linear-light finish: main image -> local occlusion -> fire bloom -> output.
  * OutputPass performs the renderer's tone mapping and sRGB conversion exactly
- * once. There is no bloom, colour filter, fixed noise image or depth-of-field.
- * Low quality skips occlusion and MSAA but retains the same linear colour path.
+ * once. Restrained HDR bloom is reserved for fire and reflected ember radiance;
+ * there is no fixed noise image, colour filter or depth-of-field.
+ * Low quality skips occlusion, bloom and MSAA, with the same linear colour path.
  */
-export class WinterPostProcessing {
+export class LandscapePostProcessing {
   private readonly composer: EffectComposer;
   private readonly occlusion: SharedDepthGTAOPass;
   private readonly output = new OutputPass();
+  private readonly bloom = new UnrealBloomPass(new Vector2(1, 1), 0.12, 0.42, 1.1);
   private quality: QualityLevel;
   private disposed = false;
 
   constructor(renderer: WebGLRenderer, scene: Scene,
-    camera: Camera, quality: QualityLevel = 'high', seed = 'winter') {
+    camera: Camera, quality: QualityLevel = 'high', seed = 'rainfire') {
     this.quality = quality;
     const depth = new DepthTexture(1, 1, UnsignedIntType);
     depth.format = DepthFormat;
@@ -108,7 +111,7 @@ export class WinterPostProcessing {
       depthTexture: depth,
       samples: 4,
     });
-    target.texture.name = 'winter-linear-beauty';
+    target.texture.name = 'landscape-linear-beauty';
     target.texture.colorSpace = LinearSRGBColorSpace;
     this.composer = new EffectComposer(renderer, target);
     // WorldRenderer already computes a bounded drawing-buffer pixel size.
@@ -116,6 +119,7 @@ export class WinterPostProcessing {
     this.occlusion = new SharedDepthGTAOPass(scene, camera, depth, seed);
     this.composer.addPass(new RenderPass(scene, camera));
     this.composer.addPass(this.occlusion);
+    this.composer.addPass(this.bloom);
     this.composer.addPass(this.output);
     this.setQuality(quality);
   }
@@ -127,6 +131,8 @@ export class WinterPostProcessing {
   setQuality(quality: QualityLevel): void {
     this.quality = quality;
     this.occlusion.enabled = quality !== 'low';
+    this.bloom.enabled = quality !== 'low';
+    this.bloom.strength = quality === 'high' ? 0.12 : 0.09;
     this.occlusion.updateGtaoMaterial({ samples: quality === 'high' ? 12 : 6 });
     const samples = quality === 'high' ? 4 : quality === 'medium' ? 2 : 0;
     for (const target of [this.composer.renderTarget1, this.composer.renderTarget2]) {
@@ -148,12 +154,14 @@ export class WinterPostProcessing {
     this.composer.renderTarget2.dispose();
     this.occlusion.gtaoRenderTarget.dispose();
     this.occlusion.pdRenderTarget.dispose();
+    this.bloom.renderTargetBright.dispose();
+    for (const target of [...this.bloom.renderTargetsHorizontal, ...this.bloom.renderTargetsVertical]) target.dispose();
     this.occlusion.gtaoNoiseTexture.needsUpdate = true;
     this.occlusion.pdNoiseTexture.needsUpdate = true;
   }
 
   diagnostics() {
-    return { ambientOcclusion: this.quality !== 'low',
+    return { ambientOcclusion: this.quality !== 'low', bloom: this.bloom.enabled,
       occlusionWidth: this.occlusion.width, occlusionHeight: this.occlusion.height };
   }
 
@@ -162,6 +170,9 @@ export class WinterPostProcessing {
     this.disposed = true;
     this.occlusion.dispose();
     this.output.dispose();
+    this.bloom.dispose();
+    // r187 does not release its high-pass material in the addon dispose().
+    this.bloom.materialHighPassFilter.dispose();
     this.composer.dispose();
   }
 }

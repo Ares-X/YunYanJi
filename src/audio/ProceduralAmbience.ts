@@ -17,6 +17,7 @@ export class ProceduralAmbience {
   private disposed = false;
   private lastError: string | null = null;
   private currentVolume = 0.45;
+  private latestFrame: EnvironmentSnapshot | null = null;
   private transitions: Promise<void> = Promise.resolve();
   private intentRevision = 0;
 
@@ -55,6 +56,7 @@ export class ProceduralAmbience {
         unlock = context.resume();
         this.graph = createAmbienceGraph(context, `${this.seed}:ambience`);
         this.graph.setVolume(this.currentVolume);
+        if (this.latestFrame) this.graph.update(this.latestFrame);
         this.transitions = unlock.catch((error: unknown) => {
           if (!this.disposed && revision === this.intentRevision) {
             this.requestedEnabled = false;
@@ -102,6 +104,8 @@ export class ProceduralAmbience {
   }
 
   update(frame: EnvironmentSnapshot): void {
+    if (this.disposed) return;
+    this.latestFrame = frame;
     this.graph?.update(frame);
   }
 

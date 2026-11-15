@@ -130,7 +130,7 @@ export class SnowParticles {
     uniforms.uTime!.value = frame.elapsed;
     (uniforms.uAdvection!.value as Vector2).copy(this.advection);
     uniforms.uLift!.value = this.lift;
-    uniforms.uIntensity!.value = Math.max(0, Math.min(1, frame.snowIntensity));
+    uniforms.uIntensity!.value = Math.max(0, Math.min(1, frame.precipitation));
   }
 
   setQuality(quality: QualityLevel): void {

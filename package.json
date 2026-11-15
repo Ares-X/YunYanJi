@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Procedural landscapes inspired by classical Chinese poetry.",
+  "description": "Procedural places to sit with rain, wind and fire.",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "tsc --noEmit && vite build",

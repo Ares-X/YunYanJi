@@ -1,10 +1,10 @@
 import { createRandom } from './random';
 import type { EnvironmentSnapshot } from './types';
 
-/** Pure state: elapsed time, snow and a continuous, bounded wind impulse. */
+/** Pure state: elapsed time, precipitation and a continuous, bounded wind impulse. */
 export class WeatherSimulation {
   elapsed = 0;
-  snowIntensity = 0.72;
+  precipitation = 0.72;
   reducedMotion = false;
   private readonly phase: number;
   private gustStarted = -100;
@@ -27,8 +27,8 @@ export class WeatherSimulation {
     this.gustStrength = Math.max(0.15, Math.min(1, Number.isFinite(strength) ? strength : 1));
   }
 
-  setSnowIntensity(value: number): void {
-    if (Number.isFinite(value)) this.snowIntensity = Math.max(0, Math.min(1, value));
+  setPrecipitation(value: number): void {
+    if (Number.isFinite(value)) this.precipitation = Math.max(0, Math.min(1, value));
   }
 
   reset(): void {
@@ -51,7 +51,7 @@ export class WeatherSimulation {
         z: 0.12 + Math.sin(this.elapsed * 0.13 + this.phase) * 0.14,
         strength: Math.min(1, 0.16 + drift * 0.15 + gust * 0.73),
       },
-      snowIntensity: this.snowIntensity,
+      precipitation: this.precipitation,
       gust,
       reducedMotion: this.reducedMotion,
     };

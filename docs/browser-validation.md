@@ -31,14 +31,16 @@ npm run capture
 - `mobile.png`：390 × 844 的手机视口，采用 Pixel 7 触摸／DPR 参数。
 - `capture.json`：浏览器版本、请求的渲染模式、实际 WebGL renderer 字符串、种子、视口、运行状态与浏览器错误。
 
-截图采用固定种子 `qa-snow`，模拟系统的减少动态效果偏好，在初始静止画面捕获；截图尺寸按 CSS 像素保存。脚本会等待真实 WebGL 首帧就绪，浏览器报错会使命令失败。每次覆盖同目录中的同名文件；需要前后对比时指定不同输出目录：
+截图默认采用首景种子 `yunyanji-rainfire-01`，模拟系统的减少动态效果偏好，在初始静止画面捕获；截图尺寸按 CSS 像素保存。脚本会等待真实 WebGL 首帧就绪，浏览器报错会使命令失败。每次覆盖同目录中的同名文件；需要前后对比时指定不同输出目录：
 
 ```bash
 npm run capture -- --device desktop --output test-results/captures/before
-npm run capture -- --device mobile --seed 雪庭-02 --output test-results/captures/after
+npm run capture -- --device mobile --seed 林间-02 --output test-results/captures/after
 ```
 
 如果刚刚完成构建且源码未再变化，可用 `npm run capture -- --skip-build` 复用 `dist/`。默认总是重新构建，避免看到旧画面。截图命令不运行完整单元测试与交互测试；它用于快速检查构图和材质。
+
+动态形态也需要实拍。`npm run capture -- --seconds 4 --output test-results/captures/after-motion` 通过真实的继续／暂停操作，在模拟时间达到 4 秒后冻结并截图。脚本会等最后一帧实际提交，避免捕获 GPU 仍在绘制的旧状态；报告同时记录请求时间和实际暂停时间。该选项允许 0–30 秒，不通过修改系统时间或伪造帧推进来取得图片。
 
 ## 使用已安装的 Chrome 或现有 Chromium
 
