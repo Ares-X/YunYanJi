@@ -1,10 +1,13 @@
-import type { Group, Vector3 } from 'three';
+import type { Group, PointLight, Vector3 } from 'three';
 import type { EnvironmentSnapshot, QualityLevel } from '../core/types';
 
 export interface LandscapeScene {
   readonly group: Group;
   readonly cameraPosition: Vector3;
   readonly cameraTarget: Vector3;
+  /** The same radiance source lights surfaces, smoke and the surrounding mist. */
+  readonly fireLight?: PointLight;
+  readonly movingCanopy?: boolean;
   /** Optional composition authored for narrow screens, in scene world units. */
   readonly portraitCameraPosition?: Vector3;
   readonly portraitCameraTarget?: Vector3;

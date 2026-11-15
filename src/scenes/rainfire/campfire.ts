@@ -1,5 +1,5 @@
 import {
-  AdditiveBlending, BackSide, BoxGeometry, BufferGeometry, Color, Float32BufferAttribute,
+  BackSide, BoxGeometry, BufferGeometry, Color, Float32BufferAttribute,
   Group, IcosahedronGeometry, Matrix4, Mesh, MeshStandardMaterial, PointLight, Points,
   ShaderMaterial, UniformsLib, UniformsUtils, Vector2, Vector3,
 } from 'three';
@@ -7,10 +7,22 @@ import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometr
 import { createRandom, randomBetween } from '../../core/random';
 import type { EnvironmentSnapshot, QualityLevel } from '../../core/types';
 import { createRainMaterial } from './rainMaterials';
+import { createFireIllumination } from './fireIllumination';
+import type { FireIlluminationState } from './fireIllumination';
 
 const TAU = Math.PI * 2;
 const STEPS: Record<QualityLevel, number> = { low: 32, medium: 64, high: 96 };
 const SPARKS: Record<QualityLevel, number> = { low: 12, medium: 24, high: 40 };
+
+interface FireUniforms {
+  uFireHeat: { value: number };
+  uFlameHeight: { value: number };
+  uCoalHeat: { value: number };
+  uSmoke: { value: number };
+  uFirePosition: { value: Vector3 };
+  uFireColor: { value: Color };
+  uFireIntensity: { value: number };
+}
 
 const NOISE = /* glsl */ `
   float fireHash(vec3 p) {
@@ -83,13 +95,13 @@ function logGeometry(seed: string, length: number, radius: number): BufferGeomet
   return geometry;
 }
 
-function fuelMaterial(time: { value: number }): MeshStandardMaterial {
+function fuelMaterial(coalHeat: { value: number }): MeshStandardMaterial {
   const material = new MeshStandardMaterial({
     color: '#574634', roughness: 0.94, emissive: '#ff510b', emissiveIntensity: 1.6, dithering: true,
   });
   material.name = 'generated-charred-split-firewood';
   material.onBeforeCompile = (shader) => {
-    shader.uniforms.uFireTime = time;
+    shader.uniforms.uCoalHeat = coalHeat;
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>
         attribute float aFuelRadius, aFuelIdentity;
@@ -103,7 +115,7 @@ function fuelMaterial(time: { value: number }): MeshStandardMaterial {
       .replace('#include <common>', `#include <common>
         varying vec3 vFuelPosition, vFuelNormal;
         varying float vFuelRadius, vFuelIdentity;
-        uniform float uFireTime;
+        uniform float uCoalHeat;
         ${NOISE}`)
       .replace('#include <color_fragment>', /* glsl */ `
         #include <color_fragment>
@@ -123,7 +135,7 @@ function fuelMaterial(time: { value: number }): MeshStandardMaterial {
         diffuseColor.rgb *= mix(1.0, 0.28, charred);
         diffuseColor.rgb *= 1.0 - endFace * lateWood * 0.48;
         float relief = weather * 0.006 + grain * 0.0018 - cracks * 0.0032;
-        float fuelGlow = cracks * charred * (0.68 + 0.12 * sin(uFireTime * 2.3 + vFuelIdentity));
+        float fuelGlow = cracks * charred * (0.60 + uCoalHeat * 0.16);
       `)
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
         totalEmissiveRadiance *= fuelGlow * 0.52;`)
@@ -138,22 +150,22 @@ function fuelMaterial(time: { value: number }): MeshStandardMaterial {
         }
       `);
   };
-  material.customProgramCacheKey = () => 'rainfire-charred-fuel-v1';
+  material.customProgramCacheKey = () => 'rainfire-charred-fuel-v2';
   return material;
 }
 
-function emberMaterial(time: { value: number }): MeshStandardMaterial {
+function emberMaterial(coalHeat: { value: number }): MeshStandardMaterial {
   const material = new MeshStandardMaterial({
     color: '#25201b', roughness: 0.99, emissive: '#ff4707', emissiveIntensity: 2.6, dithering: true,
   });
   material.name = 'generated-ember-coals';
   material.onBeforeCompile = (shader) => {
-    shader.uniforms.uCoalTime = time;
+    shader.uniforms.uCoalHeat = coalHeat;
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\nvarying vec3 vCoalPosition;')
       .replace('#include <begin_vertex>', '#include <begin_vertex>\nvCoalPosition = position;');
     shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', `#include <common>\nvarying vec3 vCoalPosition;\nuniform float uCoalTime;\n${NOISE}`)
+      .replace('#include <common>', `#include <common>\nvarying vec3 vCoalPosition;\nuniform float uCoalHeat;\n${NOISE}`)
       .replace('#include <color_fragment>', /* glsl */ `
         #include <color_fragment>
         float cells = fireNoise(vCoalPosition * 49.0);
@@ -164,9 +176,9 @@ function emberMaterial(time: { value: number }): MeshStandardMaterial {
         diffuseColor.rgb *= 0.55 + cells * 0.52;
       `)
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
-        totalEmissiveRadiance *= heat * (0.85 + 0.13 * sin(uCoalTime * 1.7 + patches * 17.0));`);
+        totalEmissiveRadiance *= heat * uCoalHeat;`);
   };
-  material.customProgramCacheKey = () => 'rainfire-ember-coals-v1';
+  material.customProgramCacheKey = () => 'rainfire-ember-coals-v2';
   return material;
 }
 
@@ -242,9 +254,9 @@ const volumeVertex = /* glsl */ `
 `;
 
 const volumeFragment = /* glsl */ `
-  uniform float uTime, uSteps;
+  uniform float uTime, uSteps, uFireHeat, uFlameHeight, uSmoke, uFireIntensity;
   uniform vec2 uWind;
-  uniform vec3 uSeed;
+  uniform vec3 uSeed, uFirePosition, uFireColor;
   uniform mat4 uWorldToLocal, uLocalToClip;
   varying vec3 vFirePosition;
   #include <common>
@@ -255,7 +267,7 @@ const volumeFragment = /* glsl */ `
   vec2 intersectFire(vec3 origin, vec3 ray) {
     vec3 safeRay = mix(vec3(0.00001), ray, step(vec3(0.00001), abs(ray)));
     vec3 a = (vec3(-1.10, 0.02, -0.90) - origin) / safeRay;
-    vec3 b = (vec3(1.10, 2.25, 0.90) - origin) / safeRay;
+    vec3 b = (vec3(1.10, 2.65, 0.90) - origin) / safeRay;
     vec3 lo = min(a, b), hi = max(a, b);
     return vec2(max(max(lo.x, lo.y), lo.z), min(min(hi.x, hi.y), hi.z));
   }
@@ -266,9 +278,16 @@ const volumeFragment = /* glsl */ `
       cos(p.y * 6.1 - uTime * 2.1 + phase)) * (0.020 + h * 0.085);
     curl += vec2(sin(p.y * 17.7 - uTime * 5.7 + phase),
       cos(p.y * 15.3 - uTime * 5.1 + phase)) * h * 0.031;
-    vec2 centre = foot * (1.0 - h * 0.42) + uWind * h * h * 0.20 + curl;
+    vec2 centre = foot * (1.0 - h * 0.42) + uWind * h * h * 0.20 + curl
+      + uFirePosition.xz * h;
     float radius = width * pow(max(0.0, 1.0 - h), 0.88) + 0.007;
-    float shape = 1.0 - length((p.xz - centre) * vec2(1.0, 1.10)) / max(0.015, radius);
+    // Twisted, flattened jets make ribbons with visible gaps rather than three
+    // opaque cones. Turbulence below folds and occasionally tears these sheets.
+    float twist = phase + p.y * 1.8;
+    vec2 across = p.xz - centre;
+    vec2 ribbon = vec2(dot(across, vec2(cos(twist), sin(twist))),
+      dot(across, vec2(-sin(twist), cos(twist))) * 1.55);
+    float shape = 1.0 - length(ribbon) / max(0.015, radius);
     return shape - smoothstep(height * 0.83, height + 0.08, p.y - 0.15) * 2.0;
   }
 
@@ -282,14 +301,13 @@ const volumeFragment = /* glsl */ `
     // Without temporal accumulation, per-pixel random offsets turn thin
     // reaction sheets into sand. Stable midpoints resolve their real shape.
     float distanceAlongRay = begin + stepLength * 0.5;
-    float frontWidth = max(0.196, stepLength * 7.0);
+    float frontWidth = max(0.12, stepLength * 4.3);
     float microDetail = 1.0 - smoothstep(0.025, 0.070, stepLength);
     float transmittance = 1.0;
     vec3 accumulated = vec3(0.0);
     vec3 firstLight = origin + ray * begin;
     bool foundLight = false;
-    float height = 0.82 + 0.10 * sin(uTime * 1.13 + uSeed.x)
-      + 0.06 * sin(uTime * 2.37 + uSeed.z);
+    float height = uFlameHeight;
     for (int sampleIndex = 0; sampleIndex < 96; sampleIndex++) {
       if (float(sampleIndex) >= uSteps || transmittance < 0.018) break;
       vec3 p = origin + ray * distanceAlongRay;
@@ -308,29 +326,38 @@ const volumeFragment = /* glsl */ `
       float field = shape + (large - 0.5) * 1.40 + (fine - 0.5) * 0.82 + (micro - 0.5) * 0.44;
       // Luminous reaction fronts form folded, thin sheets. Filling every
       // positive sample instead would turn the fire into smooth orange wax.
-      float reaction = exp(-pow((field - 0.22) / frontWidth, 2.0)) * (0.196 / frontWidth);
+      float reaction = exp(-pow((field - 0.22) / frontWidth, 2.0)) * (0.12 / frontWidth);
       float broken = smoothstep(0.27, 0.59, turbulence + (1.0 - p.y / 1.6) * 0.09);
       float flame = reaction * broken
         * smoothstep(0.19, 0.38, p.y)
         * (1.0 - smoothstep(height + 0.07, height + 0.18, p.y));
       float temperature = clamp(0.36 + fine * 0.53 + (micro - 0.5) * 0.76 - p.y * 0.08, 0.0, 1.0);
-      vec3 flameColor = mix(vec3(1.32, 0.066, 0.0012), vec3(3.24, 0.77, 0.030), smoothstep(0.20, 0.78, temperature));
+      vec3 flameColor = mix(vec3(1.35, 0.075, 0.0016), vec3(2.8, 0.64, 0.026), smoothstep(0.22, 0.84, temperature));
       // Heat varies through the folds, so the pale core consists of short
       // irregular filaments instead of one smooth height-based gradient.
-      float hotCore = smoothstep(0.74, 0.94, temperature) * reaction
-        * (1.0 - smoothstep(0.43, 1.1, p.y));
-      flameColor = mix(flameColor, vec3(3.8, 1.8, 0.32), hotCore);
-      float fireAlpha = 1.0 - exp(-flame * stepLength * 5.1);
+      float hotCore = smoothstep(0.81, 0.98, temperature) * reaction
+        * (1.0 - smoothstep(0.40, 0.78, p.y));
+      flameColor = mix(flameColor, vec3(3.25, 1.45, 0.18), hotCore * 0.65);
+      flameColor *= 0.80 + uFireHeat * 0.20;
+      float fireAlpha = 1.0 - exp(-flame * stepLength * 6.0 * uFireHeat);
 
-      vec2 smokeCentre = uWind * max(0.0, p.y - 0.5) * 0.30;
-      float smokeRadius = 0.16 + p.y * 0.08;
+      vec2 smokeCentre = uWind * max(0.0, p.y - 0.5) * 0.30 + uFirePosition.xz
+        + vec2(large - 0.5, fine - 0.5) * p.y * 0.16;
+      float smokeRadius = 0.12 + p.y * 0.10;
       float smoke = exp(-dot(p.xz - smokeCentre, p.xz - smokeCentre) / (smokeRadius * smokeRadius))
-        * smoothstep(0.77, 1.25, p.y) * (1.0 - smoothstep(1.80, 2.22, p.y))
-        * smoothstep(0.40, 0.77, turbulence);
-      smoke *= 1.0 - smoothstep(0.80, 1.08, abs(p.x));
-      float smokeAlpha = 1.0 - exp(-smoke * stepLength * 0.37);
-      vec3 smokeColor = vec3(0.018, 0.025, 0.029)
-        + vec3(0.13, 0.044, 0.012) * exp(-p.y * 1.4);
+        * smoothstep(height * 0.66, height + 0.34, p.y)
+        * (1.0 - smoothstep(1.95, 2.61, p.y))
+        * smoothstep(0.33, 0.72, turbulence) * uSmoke;
+      smoke *= (1.0 - smoothstep(0.80, 1.08, abs(p.x)))
+        * (1.0 - smoothstep(0.65, 0.88, abs(p.z)));
+      float smokeAlpha = 1.0 - exp(-smoke * stepLength * 0.62);
+      vec3 toFire = uFirePosition - p;
+      float fireDistanceSquared = max(dot(toFire, toFire), 0.08);
+      float scatter = 0.55 + 0.45 * pow(max(dot(toFire * inversesqrt(fireDistanceSquared), -ray), 0.0), 3.0);
+      // Warm low smoke and cold upper smoke receive the same light as the wet
+      // ground. This is single-scatter lighting, not an emissive orange plume.
+      vec3 incident = uFireColor * (uFireIntensity / (12.56637 * (fireDistanceSquared + 0.18)));
+      vec3 smokeColor = vec3(0.035, 0.046, 0.056) + incident * scatter * 0.18;
       float alpha = 1.0 - (1.0 - fireAlpha) * (1.0 - smokeAlpha);
       vec3 source = flameColor * fireAlpha + smokeColor * smokeAlpha * (1.0 - fireAlpha);
       if (!foundLight && alpha > 0.003) { firstLight = p; foundLight = true; }
@@ -362,7 +389,7 @@ const volumeFragment = /* glsl */ `
   }
 `;
 
-function fireVolume(seed: string, time: { value: number }, wind: { value: Vector2 }, quality: QualityLevel): Mesh {
+function fireVolume(seed: string, time: { value: number }, wind: { value: Vector2 }, fire: FireUniforms, quality: QualityLevel): Mesh {
   const random = createRandom(`${seed}/flame-volume`);
   const inverse = new Matrix4(), clip = new Matrix4();
   const material = new ShaderMaterial({
@@ -377,9 +404,10 @@ function fireVolume(seed: string, time: { value: number }, wind: { value: Vector
   });
   // UniformsUtils clones values. Rebind the shared live weather handles once.
   material.uniforms.uTime = time; material.uniforms.uWind = wind;
+  Object.assign(material.uniforms, fire);
   material.uniforms.uWorldToLocal = { value: inverse };
   material.uniforms.uLocalToClip = { value: clip };
-  const geometry = new BoxGeometry(2.20, 2.23, 1.80).translate(0, 1.135, 0);
+  const geometry = new BoxGeometry(2.20, 2.63, 1.80).translate(0, 1.335, 0);
   const mesh = new Mesh(geometry, material);
   mesh.name = 'fire-volume'; mesh.renderOrder = 2; mesh.frustumCulled = false;
   mesh.onBeforeRender = (_renderer, _scene, camera) => {
@@ -389,7 +417,7 @@ function fireVolume(seed: string, time: { value: number }, wind: { value: Vector
   return mesh;
 }
 
-function sparks(seed: string, time: { value: number }, wind: { value: Vector2 }, quality: QualityLevel): Points<BufferGeometry, ShaderMaterial> {
+function sparks(seed: string, time: { value: number }, wind: { value: Vector2 }, fire: FireUniforms, quality: QualityLevel): Points<BufferGeometry, ShaderMaterial> {
   const random = createRandom(`${seed}/rising-sparks`);
   const position: number[] = [], phase: number[] = [], life: number[] = [], size: number[] = [];
   for (let i = 0; i < SPARKS.high; i++) {
@@ -403,15 +431,16 @@ function sparks(seed: string, time: { value: number }, wind: { value: Vector2 },
   geometry.setAttribute('aSize', new Float32BufferAttribute(size, 1));
   geometry.setDrawRange(0, SPARKS[quality]);
   const material = new ShaderMaterial({
-    name: 'generated-flying-fire-embers', transparent: true, depthWrite: false, blending: AdditiveBlending, fog: true,
+    name: 'generated-flying-fire-embers', transparent: true, depthWrite: false, premultipliedAlpha: true, fog: true,
     uniforms: UniformsUtils.merge([UniformsLib.fog, {
       uTime: time, uWind: wind, uViewport: { value: 1 }, uPixelRatio: { value: 1 },
     }]),
     vertexShader: /* glsl */ `
-      uniform float uTime, uViewport, uPixelRatio;
+      uniform float uTime, uViewport, uPixelRatio, uFireHeat;
       uniform vec2 uWind;
+      uniform vec3 uFirePosition;
       attribute float aPhase, aLife, aSize;
-      varying float vSparkAlpha, vSparkHeat;
+      varying float vSparkAlpha, vSparkHeat, vSparkAsh;
       #include <fog_pars_vertex>
       void main() {
         float age = fract(uTime / aLife + aPhase);
@@ -419,39 +448,44 @@ function sparks(seed: string, time: { value: number }, wind: { value: Vector2 },
         p.y += age * (0.78 + aLife * 0.65);
         p.xz += uWind * age * age * 0.45
           + vec2(sin(age * 8.0 + aPhase * 31.0), cos(age * 7.0 + aPhase * 21.0)) * age * 0.085;
+        p.xz += uFirePosition.xz * age;
         vec4 mvPosition = modelViewMatrix * vec4(p, 1.0);
         gl_Position = projectionMatrix * mvPosition;
         float projected = aSize * 0.5 * uViewport * projectionMatrix[1][1] / max(0.1, -mvPosition.z);
-        gl_PointSize = clamp(projected, 0.7 * uPixelRatio, 3.5 * uPixelRatio);
+        vSparkAsh = step(0.79, aPhase) * smoothstep(0.10, 0.45, age);
+        gl_PointSize = clamp(projected * (1.0 + vSparkAsh * 0.6), 0.7 * uPixelRatio, 3.5 * uPixelRatio);
         vSparkAlpha = smoothstep(0.0, 0.10, age) * (1.0 - smoothstep(0.55, 1.0, age))
           * min(1.0, projected / max(0.5, uPixelRatio));
-        vSparkHeat = 1.0 - age;
+        vSparkHeat = clamp((1.0 - age) * (0.9 + uFireHeat * 0.1), 0.0, 1.0);
         #include <fog_vertex>
       }
     `,
     fragmentShader: /* glsl */ `
-      varying float vSparkAlpha, vSparkHeat;
+      varying float vSparkAlpha, vSparkHeat, vSparkAsh;
       #include <fog_pars_fragment>
       void main() {
         float distanceToCentre = length(gl_PointCoord - 0.5);
         float edge = 1.0 - smoothstep(0.06, 0.49, distanceToCentre);
         if (edge < 0.01) discard;
-        vec3 color = mix(vec3(1.2, 0.08, 0.003), vec3(3.8, 1.65, 0.32), vSparkHeat);
-        gl_FragColor = vec4(color, edge * vSparkAlpha * 0.74);
-        #include <tonemapping_fragment>
-        #include <colorspace_fragment>
+        vec3 color = mix(vec3(1.2, 0.08, 0.003), vec3(3.2, 1.25, 0.19), vSparkHeat);
+        color = mix(color, vec3(0.075, 0.066, 0.054), vSparkAsh);
+        float alpha = edge * vSparkAlpha * 0.74;
         #ifdef USE_FOG
           #ifdef FOG_EXP2
             float fogAmount = 1.0 - exp(-fogDensity * fogDensity * vFogDepth * vFogDepth);
           #else
             float fogAmount = smoothstep(fogNear, fogFar, vFogDepth);
           #endif
-          gl_FragColor.a *= 1.0 - fogAmount;
+          alpha *= 1.0 - fogAmount;
         #endif
+        gl_FragColor = vec4(color * alpha, alpha);
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
       }
     `,
   });
   material.uniforms.uTime = time; material.uniforms.uWind = wind;
+  Object.assign(material.uniforms, fire);
   const points = new Points(geometry, material);
   points.name = 'fire-embers'; points.frustumCulled = false; points.renderOrder = 3;
   const drawingSize = new Vector2();
@@ -466,6 +500,9 @@ function sparks(seed: string, time: { value: number }, wind: { value: Vector2 },
 
 export interface Campfire {
   readonly group: Group;
+  /** Stable, allocation-free sample; coordinates are local to `group`. */
+  readonly illumination: Readonly<FireIlluminationState>;
+  readonly light: PointLight;
   update(frame: EnvironmentSnapshot): void;
   setQuality(quality: QualityLevel): void;
 }
@@ -479,8 +516,17 @@ export function createCampfire(seed: string, quality: QualityLevel): Campfire {
   const group = new Group();
   group.name = 'sheltered-campfire';
   const time = { value: 0 }, wind = { value: new Vector2(0.45, 0.12) };
+  const combustion = createFireIllumination(seed);
+  const illumination = combustion.state;
+  const fire: FireUniforms = {
+    uFireHeat: { value: illumination.heat }, uFlameHeight: { value: illumination.height },
+    uCoalHeat: { value: illumination.coalHeat }, uSmoke: { value: illumination.smoke },
+    uFirePosition: { value: new Vector3(illumination.localX, illumination.localY, illumination.localZ) },
+    uFireColor: { value: new Color().setRGB(illumination.red, illumination.green, illumination.blue) },
+    uFireIntensity: { value: illumination.intensity },
+  };
   const random = createRandom(`${seed}/stacked-firewood`);
-  const material = fuelMaterial(time);
+  const material = fuelMaterial(fire.uCoalHeat);
   group.add(ashBed(seed));
   const placements = [
     [-0.08, 0.13, 0.03, 0.15, 0.03, 0.98, 0.094],
@@ -510,12 +556,12 @@ export function createCampfire(seed: string, quality: QualityLevel): Campfire {
   hearthMaterial.color.set('#68685e');
   const stones = new Mesh(stoneAndCoalGeometry(seed, false), hearthMaterial);
   stones.name = 'weathered-hearth-stones'; stones.castShadow = true; stones.receiveShadow = true;
-  const coals = new Mesh(stoneAndCoalGeometry(seed, true), emberMaterial(time));
+  const coals = new Mesh(stoneAndCoalGeometry(seed, true), emberMaterial(fire.uCoalHeat));
   coals.name = 'banked-ember-bed'; coals.castShadow = false; coals.receiveShadow = true;
-  const volume = fireVolume(seed, time, wind, quality);
-  const embers = sparks(seed, time, wind, quality);
-  const light = new PointLight(new Color('#ffbc82'), 6.8, 12, 2);
-  light.name = 'campfire-light'; light.position.set(0, 0.56, 0);
+  const volume = fireVolume(seed, time, wind, fire, quality);
+  const embers = sparks(seed, time, wind, fire, quality);
+  const light = new PointLight(fire.uFireColor.value, illumination.intensity, 12, 2);
+  light.name = 'campfire-light'; light.position.copy(fire.uFirePosition.value);
   light.castShadow = quality !== 'low';
   light.shadow.camera.near = .08;
   light.shadow.camera.far = 9;
@@ -524,20 +570,28 @@ export function createCampfire(seed: string, quality: QualityLevel): Campfire {
   light.shadow.normalBias = .014;
   light.shadow.radius = 10;
   light.shadow.mapSize.setScalar(quality === 'high' ? 768 : 512);
-  const coalLight=new PointLight('#ff6625',.45,3.1,2);
+  const coalLight=new PointLight('#ff6625',.45 * illumination.coalHeat,3.1,2);
   coalLight.position.set(.08,.15,.12);
   coalLight.name='ember-bounce';
   group.add(stones, coals, volume, embers, light,coalLight);
   group.userData.generatedFire = { flameHeight: .98, hearthRadius: 0.86, fixedAssets: 0 };
-  const phase = random() * TAU;
   return {
-    group,
+    group, illumination, light,
     update(frame): void {
       time.value = frame.elapsed;
       wind.value.set(Math.max(-1.5, Math.min(1.5, frame.wind.x)), Math.max(-1.0, Math.min(1.0, frame.wind.z)));
-      light.intensity = 6.8 * (0.94 + 0.075 * Math.sin(frame.elapsed * 5.7 + phase)
-        + 0.040 * Math.sin(frame.elapsed * 13.1 + phase * 2.3)
-        + 0.025 * Math.sin(frame.elapsed * 21.7));
+      combustion.update(frame.elapsed, wind.value.x, wind.value.y);
+      fire.uFireHeat.value = illumination.heat;
+      fire.uFlameHeight.value = illumination.height;
+      fire.uCoalHeat.value = illumination.coalHeat;
+      fire.uSmoke.value = illumination.smoke;
+      fire.uFirePosition.value.set(illumination.localX, illumination.localY, illumination.localZ);
+      fire.uFireColor.value.setRGB(illumination.red, illumination.green, illumination.blue);
+      fire.uFireIntensity.value = illumination.intensity;
+      light.position.copy(fire.uFirePosition.value);
+      light.color.copy(fire.uFireColor.value);
+      light.intensity = illumination.intensity;
+      coalLight.intensity = .45 * illumination.coalHeat;
     },
     setQuality(next): void {
       (volume.material as ShaderMaterial).uniforms.uSteps!.value = STEPS[next];

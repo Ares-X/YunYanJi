@@ -34,9 +34,11 @@ function growBark(seed:string):BarkPixels {
   const lichen=new Float32Array(WIDTH*HEIGHT);
   for(let y=0;y<HEIGHT;y++)for(let x=0;x<WIDTH;x++) {
     const u=x/WIDTH,v=y/HEIGHT,i=y*WIDTH+x;
-    const granules=noise(u,v,192,384),fine=noise(u,v,71,139),broad=noise(u,v,9,12);
-    heights[i]=.0007+granules*.00045+fine*.00055;
-    tone[i]=.59+granules*.025+fine*.025+broad*.030;
+    const granules=noise(u,v,149,271),fine=noise(u,v,41,89),broad=noise(u,v,5,9);
+    // Fine pores sit on larger growth tissue. Keeping their height below the
+    // plate relief prevents a uniformly gritty normal map from drowning it out.
+    heights[i]=.0007+granules*.00014+fine*.00032+broad*.0006;
+    tone[i]=.67+granules*.012+fine*.025+broad*.075;
     lichen[i]=smooth(.48,.76,noise(u,v,5,7)*.67+noise(u,v,14,23)*.33)
       *smooth(.38,.79,granules*.77+fine*.23);
   }
@@ -45,44 +47,50 @@ function growBark(seed:string):BarkPixels {
   // no equally spaced column/row lattice to become a pattern of short dashes.
   let boundary=-48;
   while(boundary<WIDTH+48) {
-    const columnWidth=randomBetween(random,12,42);
+    const columnWidth=randomBetween(random,18,51);
     const columnCenter=boundary+columnWidth*.5;
     let y=randomBetween(random,-180,-25);
     const phase=random()*Math.PI*2;
     while(y<HEIGHT+180) {
-      const tall=random()<.24?randomBetween(random,18,43):randomBetween(random,52,155);
+      const tall=random()<.32?randomBetween(random,20,56):randomBetween(random,48,132);
       const wide=columnWidth*randomBetween(random,.70,1.45);
-      const cx=columnCenter+Math.sin(y*.007+phase)*8.4+Math.sin(y*.023-phase)*2.1
-        +randomBetween(random,-3,3);
-      const cy=y+tall*.5,slant=randomBetween(random,-.16,.16);
-      const crest=randomBetween(random,.0018,.0068);
-      const colour=randomBetween(random,.84,1.05);
-      const edgePhase=random()*19,peel=random()<.17;
-      const bevel=randomBetween(random,1.6,4.2);
+      const cx=columnCenter+Math.sin(y*.010+phase)*columnWidth*.34+Math.sin(y*.029-phase)*3.8
+        +randomBetween(random,-wide*.14,wide*.14);
+      const cy=y+tall*.5,slant=randomBetween(random,-.22,.22);
+      const crest=randomBetween(random,.0030,.0100);
+      const colour=randomBetween(random,.81,1.02);
+      const edgePhase=random()*19,peel=random()<.28;
+      const bevel=randomBetween(random,2.4,5.7);
       for(let py=Math.floor(cy-tall*.62-4);py<=Math.ceil(cy+tall*.62+4);py++) {
         const vertical=(py-cy)/(tall*.5);
-        const endTaper=1-.18*Math.pow(Math.abs(vertical),1.7);
+        const endTaper=1-.29*Math.pow(Math.abs(vertical),1.5);
         for(let px=Math.floor(cx-wide*.75-9);px<=Math.ceil(cx+wide*.75+9);px++) {
-          const warpedX=px-cx-slant*(py-cy);
-          const edgeWave=Math.sin(py*.29+edgePhase)*1.0+Math.sin(py*.69+edgePhase*2.1)*.45;
+          const warpedX=px-cx-slant*(py-cy)-Math.sin(vertical*2.7+edgePhase)*wide*.065;
+          const edgeWave=Math.sin(py*.061+edgePhase)*2.8+Math.sin(py*.19+edgePhase*2.1)*.85;
           const sideDistance=wide*.5*endTaper+edgeWave-Math.abs(warpedX);
-          const endDistance=tall*.5+Math.sin(px*.43+edgePhase)*1.6-Math.abs(py-cy);
+          const endDistance=tall*.5+Math.sin(px*.13+edgePhase)*3.4
+            +Math.sin(px*.37-edgePhase)*1.1-Math.abs(py-cy+warpedX*.16);
           const edge=Math.min(sideDistance,endDistance);
           if(edge<0)continue;
           const i=wrap(py,HEIGHT)*WIDTH+wrap(px,WIDTH);
-          const granule=(hash(wrap(px,WIDTH),wrap(py,HEIGHT))-.5)*.00034;
+          const granule=(hash(wrap(px,WIDTH),wrap(py,HEIGHT))-.5)*.00010;
           const edgeWeight=smooth(0,bevel,edge);
-          const cup=.0008*(1-vertical*vertical)-.0005*Math.abs(warpedX)/(wide*.5);
-          const curl=peel?.0026*smooth(.12,.8,vertical)*smooth(0,.5,1-Math.abs(warpedX)/(wide*.5)):0;
+          const cup=.0012*(1-vertical*vertical)-.0008*Math.abs(warpedX)/(wide*.5);
+          const curl=peel?.0040*smooth(.10,.80,vertical)*smooth(0,.5,1-Math.abs(warpedX)/(wide*.5)):0;
           const h=.001+(crest+cup+curl+granule-.001)*edgeWeight;
           if(h>heights[i]!) {
-            const chipped=noise(wrap(px,WIDTH)/WIDTH,wrap(py,HEIGHT)/HEIGHT,83,109);
-            heights[i]=h+(chipped-.5)*.00050;
-            tone[i]=tone[i]!*(1-edgeWeight)+(colour+(chipped-.5)*.085)*edgeWeight;
+            const chipped=noise(wrap(px,WIDTH)/WIDTH,wrap(py,HEIGHT)/HEIGHT,29,63);
+            const tissue=noise(wrap(px,WIDTH)/WIDTH,wrap(py,HEIGHT)/HEIGHT,79,133);
+            // Broad flakes peel as one surface. A few missing islands expose
+            // lower tissue in both pigment and relief, breaking up long stripes.
+            const worn=smooth(.61,.80,chipped)*smooth(.18,.50,edgeWeight);
+            heights[i]=h-worn*crest*.48+(tissue-.5)*.00028;
+            tone[i]=tone[i]!*(1-edgeWeight)
+              +(colour+(chipped-.5)*.095+(tissue-.5)*.025-worn*.10)*edgeWeight;
           }
         }
       }
-      y+=tall*randomBetween(random,.70,.96);
+      y+=tall*randomBetween(random,.76,1.10);
     }
     boundary+=columnWidth;
   }
@@ -95,8 +103,12 @@ function growBark(seed:string):BarkPixels {
   const occlusionOffsets=[[-5,0],[5,0],[0,-7],[0,7],[-8,-9],[8,-9],[-8,9],[8,9]];
   for(let y=0;y<HEIGHT;y++)for(let x=0;x<WIDTH;x++) {
     const i=y*WIDTH+x,o=i*4;
-    const dx=(heights[y*WIDTH+wrap(x+1,WIDTH)]!-heights[y*WIDTH+wrap(x-1,WIDTH)]!)/(2*texelX);
-    const dy=(heights[wrap(y+1,HEIGHT)*WIDTH+x]!-heights[wrap(y-1,HEIGHT)*WIDTH+x]!)/(2*texelY);
+    // A two-texel derivative preserves centimetre flakes while suppressing
+    // single-pixel grit that would glitter when lit from the side.
+    const dx=(heights[y*WIDTH+wrap(x+1,WIDTH)]!+heights[y*WIDTH+wrap(x+2,WIDTH)]!
+      -heights[y*WIDTH+wrap(x-1,WIDTH)]!-heights[y*WIDTH+wrap(x-2,WIDTH)]!)/(6*texelX);
+    const dy=(heights[wrap(y+1,HEIGHT)*WIDTH+x]!+heights[wrap(y+2,HEIGHT)*WIDTH+x]!
+      -heights[wrap(y-1,HEIGHT)*WIDTH+x]!-heights[wrap(y-2,HEIGHT)*WIDTH+x]!)/(6*texelY);
     const inv=1/Math.sqrt(dx*dx+dy*dy+1),moss=lichen[i]!;
     normals[o]=Math.round((-dx*inv*.5+.5)*255);
     normals[o+1]=Math.round((-dy*inv*.5+.5)*255);
@@ -110,16 +122,20 @@ function growBark(seed:string):BarkPixels {
     for(const [ox,oy] of occlusionOffsets) {
       surrounding+=heights[wrap(y+oy!,HEIGHT)*WIDTH+wrap(x+ox!,WIDTH)]!;
     }
-    const visibility=Math.max(.80,1-Math.max(0,surrounding/8-heights[i]!)*160);
-    const shadedTone=tone[i]!*visibility;
+    const hollow=Math.max(0,surrounding/8-heights[i]!);
+    const visibility=Math.max(.73,1-hollow*110);
+    const runoff=noise(x/WIDTH,y/HEIGHT,7,4)*.66+noise(x/WIDTH,y/HEIGHT,21,11)*.34;
+    const wet=saturate(smooth(.27,.69,runoff)*.83+hollow*45);
+    const shadedTone=tone[i]!*visibility*(1-wet*.08);
     // Packed albedo is a relative multiplier, not sRGB colour; decoding is
     // explicit in the wood shader so vertex tone remains physically modest.
-    albedo[o]=Math.round(saturate(shadedTone*(.70+warm*.025))*255);
-    albedo[o+1]=Math.round(saturate(shadedTone*(.685+warm*.014))*255);
-    albedo[o+2]=Math.round(saturate(shadedTone*(.65+warm*.012))*255);
+    albedo[o]=Math.round(saturate(shadedTone*(.69+warm*.034))*255);
+    albedo[o+1]=Math.round(saturate(shadedTone*(.658+warm*.020))*255);
+    albedo[o+2]=Math.round(saturate(shadedTone*(.603+warm*.018))*255);
     albedo[o+3]=Math.round(saturate(moss*2.4)*255);
-    const wet=noise(x/WIDTH,y/HEIGHT,7,11);
-    const rough=.69+tone[i]!*.09+wet*.085+moss*.20;
+    // Wet runnels are darker but smoother; raised fibrous plates and lichen
+    // keep a broad, rough response. All three maps describe the same surface.
+    const rough=.80+tone[i]!*.035-wet*.37+moss*.15;
     roughness[o]=255;roughness[o+1]=Math.round(saturate(rough)*255);
     roughness[o+2]=255;roughness[o+3]=255;
   }

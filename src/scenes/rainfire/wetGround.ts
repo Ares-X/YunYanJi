@@ -205,7 +205,10 @@ export function createWetGround(seed: string, quality: QualityLevel, height: (x:
     mesh,
     update(frame):void {
       if(disposed)return;
-      if(frame.elapsed<elapsed||frame.precipitation!==lastRain)invalidate();
+      // A paused frame must capture its exact fire/foliage state once. Otherwise
+      // context restoration could replace a stale 8 Hz reflection with time T.
+      if(frame.elapsed<elapsed||frame.precipitation!==lastRain
+        ||(frame.delta===0&&frame.elapsed!==lastCapture))invalidate();
       elapsed=frame.elapsed;lastRain=frame.precipitation;
       material.uniforms.uTime!.value=elapsed;
       material.uniforms.uWind!.value=Math.max(0,Math.min(1,frame.wind.strength));

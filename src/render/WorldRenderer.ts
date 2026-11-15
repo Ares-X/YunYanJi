@@ -9,6 +9,7 @@ import type { LandscapeScene } from '../scenes/types';
 import { createRainAtmosphere, CLOUD_LIGHT_DIRECTION } from './RainAtmosphere';
 import { GroundContactShadows } from './GroundContactShadows';
 import { LandscapePostProcessing } from './LandscapePostProcessing';
+import { CanopyLightField } from './CanopyLightField';
 import { drawingSize, QUALITY } from './quality';
 
 export class WorldRenderer {
@@ -16,8 +17,9 @@ export class WorldRenderer {
   readonly scene = new Scene();
   readonly camera = new PerspectiveCamera(49, 1, 0.12, 430);
   private readonly sky = createRainAtmosphere();
-  private readonly sun = new DirectionalLight('#bfd1df', 0.72);
+  private readonly sun = new DirectionalLight('#c3d7e0', 1.15);
   private readonly contacts = new GroundContactShadows();
+  private readonly canopy = new CanopyLightField();
   private readonly post: LandscapePostProcessing;
   private environment: WebGLCubeRenderTarget | undefined;
   private quality: QualityLevel;
@@ -29,6 +31,10 @@ export class WorldRenderer {
   private renderedElapsed = 0;
   private width = 1;
   private height = 1;
+  private lastCanopyShadow = -Infinity;
+  private lastFireShadow = -Infinity;
+  private canopyShadowUpdates = 0;
+  private fireShadowUpdates = 0;
 
   constructor(readonly canvas: HTMLCanvasElement, readonly landscape: LandscapeScene, quality: QualityLevel) {
     this.quality = quality;
@@ -40,9 +46,11 @@ export class WorldRenderer {
     this.renderer.info.autoReset = false;
     this.renderer.shadowMap.type = PCFShadowMap;
     this.renderer.shadowMap.autoUpdate = false;
-    this.scene.background = new Color('#435a65');
-    this.scene.fog = new FogExp2('#435a65', 0.015);
-    this.scene.environmentIntensity = 1.25;
+    this.scene.background = new Color('#4d6874');
+    // A very light far-distance veil also lives in the reflected scene. The
+    // view-dependent, shadowed mist is integrated once by the atmosphere pass.
+    this.scene.fog = new FogExp2('#4d6874', 0.003);
+    this.scene.environmentIntensity = 1.12;
     this.scene.add(new HemisphereLight('#a6b4bc', '#484435', 0.16));
     // Keep the shadow volume over the visible foreground as well as the grove.
     this.sun.target.position.set(-1, 0, -8);
@@ -52,11 +60,15 @@ export class WorldRenderer {
     this.sun.shadow.normalBias = 0.035;
     this.sun.shadow.radius = 3.5;
     this.sun.shadow.intensity = 0.75;
+    this.sun.shadow.autoUpdate = false;
+    if (landscape.fireLight) landscape.fireLight.shadow.autoUpdate = false;
     this.scene.add(this.sun, this.sun.target, landscape.group);
     this.camera.position.copy(landscape.cameraPosition);
     this.lookAt.copy(landscape.cameraTarget);
     this.camera.lookAt(this.lookAt);
-    this.post = new LandscapePostProcessing(this.renderer, this.scene, this.camera, quality);
+    this.canopy.applyTo(this.scene);
+    this.post = new LandscapePostProcessing(this.renderer, this.scene, this.camera, this.sun,
+      landscape.fireLight, this.canopy.texture, this.canopy.matrix, quality);
     this.rebuildEnvironment();
     this.setQuality(quality);
   }
@@ -79,7 +91,11 @@ export class WorldRenderer {
     this.scene.add(this.sky.mesh);
     this.landscape.invalidateRenderCaches?.();
     this.contacts.bake(this.renderer, this.scene);
+    this.canopy.bake(this.renderer, this.scene);
     this.post.invalidate();
+    this.lastCanopyShadow = this.lastFireShadow = -Infinity;
+    this.sun.shadow.needsUpdate = true;
+    if (this.landscape.fireLight) this.landscape.fireLight.shadow.needsUpdate = true;
     this.renderer.shadowMap.needsUpdate = true;
   }
 
@@ -105,6 +121,9 @@ export class WorldRenderer {
       this.sun.shadow.map = null;
       this.sun.shadow.mapSize.set(config.shadowSize, config.shadowSize);
     }
+    this.sun.shadow.needsUpdate = true;
+    if (this.landscape.fireLight) this.landscape.fireLight.shadow.needsUpdate = true;
+    this.lastCanopyShadow = this.lastFireShadow = -Infinity;
     this.renderer.shadowMap.needsUpdate = true;
     this.landscape.setQuality(quality);
     this.post.setQuality(quality);
@@ -153,7 +172,27 @@ export class WorldRenderer {
       this.frameFence = null;
     }
     this.renderer.info.reset();
-    this.post.render();
+    // Broad tree shadows move slowly; a near fire needs a faster cadence. Each
+    // light owns its invalidation, so a fire update never redraws the whole grove.
+    if (QUALITY[this.quality].shadows) {
+      if (frame.elapsed < this.lastCanopyShadow || this.lastCanopyShadow === -Infinity
+        || (frame.delta === 0 && frame.elapsed !== this.lastCanopyShadow)
+        || (this.landscape.movingCanopy && frame.elapsed - this.lastCanopyShadow >= 1 / 6)) {
+        this.sun.shadow.needsUpdate = true;
+        this.lastCanopyShadow = frame.elapsed;
+        this.canopyShadowUpdates += 1;
+        this.renderer.shadowMap.needsUpdate = true;
+      }
+      const fire = this.landscape.fireLight;
+      if (fire && (frame.elapsed < this.lastFireShadow || frame.elapsed - this.lastFireShadow >= 1 / 10
+        || (frame.delta === 0 && frame.elapsed !== this.lastFireShadow))) {
+        fire.shadow.needsUpdate = true;
+        this.lastFireShadow = frame.elapsed;
+        this.fireShadowUpdates += 1;
+        this.renderer.shadowMap.needsUpdate = true;
+      }
+    }
+    this.post.render(frame);
     this.renderedElapsed = frame.elapsed;
     this.frameFence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
     gl.flush();
@@ -164,6 +203,9 @@ export class WorldRenderer {
     return { quality: this.quality, viewX: this.goal.x, viewY: this.goal.y, calls: this.renderer.info.render.calls, triangles: this.renderer.info.render.triangles,
       geometries: this.renderer.info.memory.geometries, textures: this.renderer.info.memory.textures,
       contactBakes: this.contacts.bakes, contactResolution: this.contacts.resolution,
+      canopyBakes: this.canopy.bakes,
+      canopyShadowUpdates: this.canopyShadowUpdates, fireShadowUpdates: this.fireShadowUpdates,
+      lastCanopyShadow: this.lastCanopyShadow, lastFireShadow: this.lastFireShadow,
       deferredFrames: this.deferredFrames, renderedElapsed: this.renderedElapsed,
       drawingWidth: this.canvas.width, drawingHeight: this.canvas.height,
       ...this.post.diagnostics(), ...this.landscape.diagnostics?.() };
@@ -177,6 +219,7 @@ export class WorldRenderer {
     this.sky.dispose();
     this.environment?.dispose();
     this.contacts.dispose();
+    this.canopy.dispose();
     this.post.dispose();
     this.sun.shadow.map?.dispose();
     this.sun.dispose();

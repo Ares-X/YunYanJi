@@ -75,7 +75,7 @@ function bakeEarth(seed: string): { color: DataTexture; normal: DataTexture; sur
         + (grain - .5) * .00038 + (grit - .5) * .00011;
       heights[i] = h;
       wetness[i] = wet;
-      roughness[i] = .90 - wet * .14 + (grains - .5) * .08;
+      roughness[i] = .87 - wet * .23 + (grains - .5) * .08;
       occlusion[i] = .83 + grains * .14;
       const value = .90 + broad * .12 + hummock * .085 + (grain - .5) * .026 - wet * .14;
       pigment[i * 3] = .235 * value;
@@ -115,7 +115,7 @@ function bakeEarth(seed: string): { color: DataTexture; normal: DataTexture; sur
         const coverage = smooth((1 - radius) * 5);
         const dome = Math.sqrt(1 - radius);
         heights[i] = heights[i]! + dome * lift;
-        roughness[i] = roughness[i]! * (1 - coverage) + (.70 + hue * .13) * coverage;
+        roughness[i] = roughness[i]! * (1 - coverage) + (.70 + hue * .13 - wetness[i]! * .10) * coverage;
         occlusion[i] = occlusion[i]! * (1 - coverage) + (.82 + dome * .18) * coverage;
         for (let k = 0; k < 3; k += 1) {
           pigment[i * 3 + k] = pigment[i * 3 + k]! * (1 - coverage)
@@ -146,7 +146,7 @@ function bakeEarth(seed: string): { color: DataTexture; normal: DataTexture; sur
         const spine = Math.exp(-Math.abs(u) * width * .85);
         const wrinkle = Math.sin(v * 35 + u * 8) * .00011;
         heights[i] = heights[i]! + coverage * (.00045 + spine * .0004 + wrinkle);
-        roughness[i] = roughness[i]! * (1 - coverage) + (.64 + age * .15) * coverage;
+        roughness[i] = roughness[i]! * (1 - coverage) + (.64 + age * .15 - wetness[i]! * .12) * coverage;
         occlusion[i] = occlusion[i]! * (1 - coverage) + .94 * coverage;
         for (let k = 0; k < 3; k += 1) {
           pigment[i * 3 + k] = pigment[i * 3 + k]! * (1 - coverage)
@@ -234,8 +234,8 @@ export function createEarthMaterial(seed: string, waterLevel = -.018): MeshPhysi
   const ecology = createForestEcology(seed).createTexture();
   const random = createRandom(`${seed}/earth/macro`);
   const material = new MeshPhysicalMaterial({
-    color: 0xffffff, roughness: .84, metalness: 0, specularIntensity: .28,
-    ior: 1.45, dithering: true,
+    color: 0xffffff, roughness: .84, metalness: 0, specularIntensity: .48,
+    ior: 1.45, clearcoat: 1, clearcoatRoughness: .35, dithering: true,
   });
   material.name = 'generated-wet-forest-earth';
   material.userData.proceduralTextures = [maps.color, maps.normal, maps.surface, ecology];
@@ -282,6 +282,10 @@ export function createEarthMaterial(seed: string, waterLevel = -.018): MeshPhysi
           *smoothstep(.67,.84,earthNoise(earthP*2.7));
         float earthMottle = earthNoise(earthP*.52);
         float earthMoss = ecologyCover.a;
+        // A water film fills compressed micro-hollows, while loose organic
+        // litter and moss interrupt it. This is separate from the puddle mesh.
+        float earthWet = smoothstep(.13,.72,earthSurface.b+earthWater*.55+earthMudFilm*.38)
+          *(1.0-ecologyCover.r*.60)*(1.0-earthMoss*.75);
         earthColor *= 1.4*(.94+earthMottle*.09)*(1.0-earthWater*.11);
         earthColor=mix(earthColor,earthColor*vec3(.78,.72,.61),ecologyCover.r*.52+ecologyCover.b*.12);
         earthColor=mix(earthColor,earthColor*vec3(1.13,1.15,1.13),ecologyCover.g*.8);
@@ -290,8 +294,8 @@ export function createEarthMaterial(seed: string, waterLevel = -.018): MeshPhysi
       `)
       .replace('#include <roughnessmap_fragment>', /* glsl */ `
         #include <roughnessmap_fragment>
-        roughnessFactor = mix(clamp(earthSurface.r+.04-earthWater*.035+earthMoss*.08,.64,.94),
-          .52,earthMudFilm*.9);
+        roughnessFactor = mix(clamp(earthSurface.r+.025-earthWater*.08+earthMoss*.10,.52,.94),
+          .36,earthMudFilm*.7);
       `)
       .replace('#include <normal_fragment_maps>', /* glsl */ `
         #include <normal_fragment_maps>
@@ -305,9 +309,26 @@ export function createEarthMaterial(seed: string, waterLevel = -.018): MeshPhysi
         earthZ = normalize(earthZ-normal*dot(normal,earthZ));
         float earthDetailStrength=.68*(1.0-ecologyCover.r*.22);
         normal = normalize(normal*earthBump.z+earthX*earthBump.x*earthDetailStrength+earthZ*earthBump.y*earthDetailStrength);
+      `)
+      .replace('#include <clearcoat_normal_fragment_begin>', /* glsl */ `
+        #include <clearcoat_normal_fragment_begin>
+        #ifdef USE_CLEARCOAT
+          // Water smooths the finest grain, but follows the terrain and larger
+          // fragments. The same relief still breaks its highlights into glints.
+          clearcoatNormal=normalize(mix(nonPerturbedNormal,normal,.65-earthWet*.30));
+        #endif
+      `)
+      .replace('#include <lights_physical_fragment>', /* glsl */ `
+        #include <lights_physical_fragment>
+        #ifdef USE_CLEARCOAT
+          material.clearcoat=earthWet*.72;
+          material.clearcoatRoughness=clamp(mix(.38,.20,earthWet)+geometryRoughness,.045,1.0);
+          // Air/water Fresnel reflectance is about 2%, lower than varnish.
+          material.clearcoatF0=vec3(.0204);
+        #endif
       `);
   };
-  material.customProgramCacheKey = () => 'correlated-forest-earth-v4';
+  material.customProgramCacheKey = () => 'correlated-forest-earth-v5';
   material.addEventListener('dispose', () => {
     maps.color.dispose(); maps.normal.dispose(); maps.surface.dispose(); ecology.dispose();
   });

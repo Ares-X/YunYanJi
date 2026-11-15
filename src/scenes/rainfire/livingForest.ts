@@ -3,7 +3,9 @@ import {
   MeshStandardMaterial, Vector3,
 } from 'three';
 import { createRandom, randomBetween } from '../../core/random';
+import type { EnvironmentSnapshot } from '../../core/types';
 import { BARK_WIDTH_METRES, BARK_HEIGHT_METRES, createBarkSurface } from './barkSurface';
+import { createForestWind } from './forestWind';
 
 const UP = new Vector3(0, 1, 0);
 const VIEWPOINT = new Vector3(1, 1.25, 4.5);
@@ -19,8 +21,15 @@ class Surface {
   colors: number[] = [];
   identity: number[] = [];
   rootHeights: number[] = [];
+  windRoots: number[] = [];
+  windAnchors: number[] = [];
   indices: number[] = [];
   rootHeight = 0;
+  rootX = 0;
+  rootZ = 0;
+  treeHeight = 1;
+  leafAnchor = new Vector3();
+  leafOpenness = 0;
   groundAt?: Height;
   vertex(p: Vector3, u: number, v: number, color: Color, identity: number): number {
     const at = this.positions.length / 3;
@@ -29,6 +38,8 @@ class Surface {
     this.colors.push(color.r, color.g, color.b);
     this.identity.push(identity);
     this.rootHeights.push(this.rootHeight);
+    this.windRoots.push(this.rootX,this.rootHeight,this.rootZ,this.treeHeight);
+    this.windAnchors.push(this.leafAnchor.x,this.leafAnchor.y,this.leafAnchor.z,this.leafOpenness);
     return at;
   }
   triangle(a: number, b: number, c: number): void { this.indices.push(a, b, c); }
@@ -39,6 +50,8 @@ class Surface {
     g.setAttribute('color', new Float32BufferAttribute(this.colors, 3));
     g.setAttribute('aForestIdentity', new Float32BufferAttribute(this.identity, 1));
     g.setAttribute('aForestRootHeight', new Float32BufferAttribute(this.rootHeights, 1));
+    g.setAttribute('aForestWindRoot', new Float32BufferAttribute(this.windRoots, 4));
+    g.setAttribute('aForestWindAnchor', new Float32BufferAttribute(this.windAnchors, 4));
     g.setIndex(this.indices);
     g.computeVertexNormals();
     g.computeBoundingSphere();
@@ -145,7 +158,7 @@ function barkMaterial(seed:string): MeshStandardMaterial {
         vRoughnessMapUv+=barkOffset;`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>
         vBarkUv=uv*vec2(${1/BARK_WIDTH_METRES},${1/BARK_HEIGHT_METRES})+barkOffset;
-        vForestPosition=(modelMatrix*vec4(position,1.0)).xyz;
+        vForestPosition=(modelMatrix*vec4(transformed,1.0)).xyz;
         vBarkRootHeight=aForestRootHeight;`);
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>
@@ -177,7 +190,7 @@ function barkMaterial(seed:string): MeshStandardMaterial {
         diffuseColor.rgb=mix(diffuseColor.rgb,colony,moss*.75);
       `)
       .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
-        roughnessFactor=clamp(roughnessFactor-damp*.08+moss*.06,.58,.98);`);
+        roughnessFactor=clamp(roughnessFactor-damp*.08+moss*.06,.36,.98);`);
   };
   material.customProgramCacheKey = () => 'living-forest-grown-bark-v5';
   return material;
@@ -185,20 +198,23 @@ function barkMaterial(seed:string): MeshStandardMaterial {
 
 function foliageMaterial(): MeshStandardMaterial {
   const material = new MeshStandardMaterial({ color: 0xffffff, vertexColors: true,
-    side: DoubleSide, roughness: .69, metalness: 0, dithering: true });
+    side: DoubleSide, roughness: .57, metalness: 0, dithering: true });
   material.name = 'living-forest-individual-leaves';
   material.onBeforeCompile = shader => {
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', `#include <common>
         attribute float aForestIdentity;
         varying vec2 vLeafUv;
-        varying float vLeafIdentity;`)
+        varying float vLeafIdentity;
+        varying float vLeafOpenness;`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>
-        vLeafUv=uv;vLeafIdentity=aForestIdentity;`);
+        vLeafUv=uv;vLeafIdentity=aForestIdentity;
+        vLeafOpenness=aForestWindAnchor.w;`);
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>
         varying vec2 vLeafUv;
-        varying float vLeafIdentity;`)
+        varying float vLeafIdentity;
+        varying float vLeafOpenness;`)
       .replace('#include <color_fragment>', /* glsl */ `
         #include <color_fragment>
         float span=abs(vLeafUv.x-.5);
@@ -206,22 +222,40 @@ function foliageMaterial(): MeshStandardMaterial {
         float midrib=1.0-smoothstep(.008,.008+aa,span);
         float ribs=abs(fract(vLeafUv.y*9.0-span*4.7+vLeafIdentity*.7)-.5);
         float veins=(1.0-smoothstep(.018,.018+aa*2.0,ribs))*(1.0-span*1.5);
-        diffuseColor.rgb*=.82+vLeafUv.y*.20+midrib*.17+veins*.055;
+        diffuseColor.rgb*=.80+vLeafUv.y*.18+midrib*.11+veins*.045;
       `)
       .replace('#include <lights_fragment_end>', /* glsl */ `
         #include <lights_fragment_end>
+        // A leaf inside a crown sees less sky than one on its outside. This
+        // controls only indirect light; real shadows still control direct light.
+        float skyVisibility=mix(.28,1.0,vLeafOpenness);
+        reflectedLight.indirectDiffuse*=skyVisibility;
+        reflectedLight.indirectSpecular*=mix(.45,1.0,vLeafOpenness);
         #if NUM_DIR_LIGHTS > 0
-          float transmitted=pow(max(0.0,dot(-normal,directionalLights[0].direction)),2.0);
-          reflectedLight.directDiffuse+=diffuseColor.rgb*directionalLights[0].color*transmitted*.11;
+          float leafShadow=1.0;
+          #if defined(USE_SHADOWMAP) && NUM_DIR_LIGHT_SHADOWS > 0
+            DirectionalLightShadow leafSun=directionalLightShadows[0];
+            leafShadow=receiveShadow?getShadow(directionalShadowMap[0],leafSun.shadowMapSize,
+              leafSun.shadowIntensity,leafSun.shadowBias,leafSun.shadowRadius,vDirectionalShadowCoord[0]):1.0;
+          #endif
+          float transmitted=pow(max(0.0,dot(-geometryNormal,directionalLights[0].direction)),1.5);
+          float forwardScatter=pow(max(0.0,dot(-geometryViewDir,directionalLights[0].direction)),3.0);
+          vec3 thinLeaf=diffuseColor.rgb*vec3(.86,1.16,.68);
+          reflectedLight.directDiffuse+=thinLeaf*directionalLights[0].color*leafShadow
+            *transmitted*(.19+forwardScatter*.12)*mix(.55,1.0,vLeafOpenness);
         #endif
       `);
   };
-  material.customProgramCacheKey = () => 'living-forest-leaf-v1';
+  material.customProgramCacheKey = () => 'living-forest-leaf-v2';
   return material;
 }
 
 function leaf(surface: Surface, root: Vector3, direction: Vector3, length: number,
   width: number, roll: number, color: Color, identity: number, detailed: boolean): void {
+  surface.leafAnchor.copy(root);
+  const heightFraction=Math.max(0,(root.y-surface.rootHeight)/surface.treeHeight);
+  const radial=Math.hypot(root.x-surface.rootX,root.z-surface.rootZ)/Math.max(1.2,surface.treeHeight*.29);
+  surface.leafOpenness=Math.max(.18,Math.min(1,.18+radial*.78+heightFraction*.38));
   const axis=direction.clone().normalize();
   let cross=axis.clone().cross(UP);
   if(cross.lengthSq()<.0001)cross=axis.clone().cross(new Vector3(0,0,1));
@@ -281,7 +315,7 @@ function saplingCrown(spec:TreeSpec,identity:number,wood:Surface,leaves:Surface,
     return curve;
   };
   const putLeaf=(attach:Vector3,direction:Vector3)=>{
-    const size=randomBetween(random,.12,.205)*(far?1.09:1);
+    const size=randomBetween(random,.13,.23)*(far?1.09:1);
     const color=new Color().setRGB(.071,.118,.041).multiplyScalar(randomBetween(random,.65,1.28));
     if(random()<.045)color.setRGB(.12,.112,.052).multiplyScalar(randomBetween(random,.75,1.1));
     leaf(leaves,attach,direction,size,size*randomBetween(random,.55,.78),
@@ -292,10 +326,11 @@ function saplingCrown(spec:TreeSpec,identity:number,wood:Surface,leaves:Surface,
     if(side.lengthSq()<.001)side.set(1,0,0);else side.normalize();
     const around=side.clone().cross(direction).normalize();
     const twist=random()*TAU;
-    for(let shoot=0;shoot<3;shoot++) {
+    const shoots=2+Math.floor(random()*3);
+    for(let shoot=0;shoot<shoots;shoot++) {
       // Individual shoots diverge through a volume. No shared horizontal
       // leaf deck runs from the trunk to the edge of the crown.
-      const angle=twist+shoot*2.09+randomBetween(random,-.50,.50);
+      const angle=twist+shoot*TAU/shoots+randomBetween(random,-.70,.70);
       const growth=direction.clone().multiplyScalar(.57)
         .addScaledVector(side,Math.cos(angle)*.72)
         .addScaledVector(around,Math.sin(angle)*.62)
@@ -305,9 +340,11 @@ function saplingCrown(spec:TreeSpec,identity:number,wood:Surface,leaves:Surface,
       const curve=cubic(root,root.clone().addScaledVector(growth,length*.34),
         end.clone().addScaledVector(growth,-length*.26).addScaledVector(UP,length*.10),end);
       if(near&&root.y<7.5)tube(wood,curve,.0025,.0004,3,3,identity,woodColor);
-      const count=far?14:18;
+      const count=(far?9:11)+Math.floor(random()*(far?7:11));
       for(let k=0;k<count;k++) {
-        const at=(k+randomBetween(random,.12,.92))/count;
+        // Most leaf area gathers around a shoot's growing tip; intermittent
+        // bare portions break up the old evenly feathered branch silhouette.
+        const at=Math.pow((k+randomBetween(random,.12,.92))/count,.56);
         const attach=curve(at);
         const axis=tangent(curve,at);
         let lateral=axis.clone().cross(UP);
@@ -371,7 +408,10 @@ function tree(spec:TreeSpec,identity:number,wood:Surface,leaves:Surface,seed:str
   const random=createRandom(`${seed}/living-tree/${identity}`);
   const {x,z,height,radius}=spec;
   const ground=heightAt(x,z)-.065;
-  wood.rootHeight=ground+.065;
+  for(const surface of [wood,leaves]) {
+    surface.rootHeight=ground+.065;
+    surface.rootX=x;surface.rootZ=z;surface.treeHeight=height;
+  }
   wood.groundAt=heightAt;
   const distance=Math.hypot(x-1,z-4.5);
   const near=distance<18;
@@ -428,13 +468,15 @@ function tree(spec:TreeSpec,identity:number,wood:Surface,leaves:Surface,seed:str
 
   // Broad overlapping crowns occupy the visible forest. Main limbs fork at
   // unequal heights; the crown's outline comes from many small leaf surfaces.
-  const primaryCount=far?7:10;
+  const primaryCount=(far?5:7)+Math.floor(random()*3);
+  const crownBearing=phase+randomBetween(random,-.6,.6);
+  const crownEccentricity=randomBetween(random,.20,.43);
   const occupiedJunctions:number[]=[];
   for(let primary=0;primary<primaryCount;primary++) {
-    let t=randomBetween(random,.32,.73);
+    let t=randomBetween(random,.28,.77);
     if(near) {
       for(let attempt=0;attempt<8&&occupiedJunctions.some(old=>Math.abs(old-t)*height<.68);attempt++) {
-        t=randomBetween(random,.32,.73);
+        t=randomBetween(random,.28,.77);
       }
       occupiedJunctions.push(t);
     }
@@ -442,10 +484,11 @@ function tree(spec:TreeSpec,identity:number,wood:Surface,leaves:Surface,seed:str
     const start=trunk(t);
     const outward=new Vector3(Math.cos(angle),0,Math.sin(angle));
     const sideways=outward.clone().cross(UP);
-    const crownWidth=(height*.245)
-      *Math.pow(Math.sin(t*Math.PI)*.73+.27,.65);
-    const length=crownWidth*randomBetween(random,.64,1.20);
-    const rise=length*randomBetween(random,.16,.69);
+    const crownWidth=(height*.27)
+      *Math.pow(Math.sin(t*Math.PI)*.73+.27,.65)
+      *(1+Math.cos(angle-crownBearing)*crownEccentricity);
+    const length=crownWidth*randomBetween(random,.64,1.19);
+    const rise=length*randomBetween(random,-.02,.77);
     const end=start.clone().addScaledVector(outward,length).addScaledVector(UP,rise);
     const curve=cubic(start,start.clone().addScaledVector(outward,length*.22).addScaledVector(UP,rise*.10),
       end.clone().addScaledVector(outward,-length*.25).addScaledVector(UP,-rise*.49),end);
@@ -462,7 +505,10 @@ function tree(spec:TreeSpec,identity:number,wood:Surface,leaves:Surface,seed:str
       tube(wood,u=>curve(u*collarEnd),Math.max(branchRadius*1.20,parentRadius*.69),
         tipRadius*1.015,9,14,identity+primary*.01,woodColor);
     }
-    const secondaryCount=far?4:5;
+    // Storm-broken lower boughs and unequal branch fans give each crown its
+    // own silhouette, instead of adding noise to an identical branching count.
+    if(primary>0&&t<.45&&random()<.18)continue;
+    const secondaryCount=(far?3:4)+Math.floor(random()*3);
     for(let second=0;second<secondaryCount;second++) {
       const at=.24+(second+randomBetween(random,.1,.9))/secondaryCount*.74;
       const root=curve(at),sign=second%2?1:-1;
@@ -476,7 +522,7 @@ function tree(spec:TreeSpec,identity:number,wood:Surface,leaves:Surface,seed:str
       // that budget on the leaf area that actually closes the canopy.
       if(!far)tube(wood,secondary,Math.max(.003,branchRadius*(1-at)*.45),.001,
         near?4:2,near?4:3,identity+second*.002,woodColor);
-      const tertiaryCount=far?4:5;
+      const tertiaryCount=(far?3:4)+Math.floor(random()*3);
       for(let third=0;third<tertiaryCount;third++) {
         const u=.14+(third+randomBetween(random,.1,.9))/tertiaryCount*.85;
         const node=secondary(u);
@@ -490,9 +536,9 @@ function tree(spec:TreeSpec,identity:number,wood:Surface,leaves:Surface,seed:str
         const twig=cubic(node,node.clone().addScaledVector(growth,twigLength*.30),
           twigTip.clone().addScaledVector(growth,-twigLength*.22),twigTip);
         if(near&&node.y<5.5)tube(wood,twig,.0027,.0005,3,3,identity,woodColor);
-        const count=far?15:22;
+        const count=(far?10:14)+Math.floor(random()*(far?7:11));
         for(let k=0;k<count;k++) {
-          const f=(k+randomBetween(random,.1,.9))/count;
+          const f=Math.pow((k+randomBetween(random,.1,.9))/count,.55);
           const attach=twig(f);
           // The whole permitted look-up range is retained, including the
           // portrait field of view; only crowns above a 44-degree ray are
@@ -503,7 +549,7 @@ function tree(spec:TreeSpec,identity:number,wood:Surface,leaves:Surface,seed:str
           const leafDirection=growth.clone().multiplyScalar(randomBetween(random,.21,.54))
             .addScaledVector(lateral,side*randomBetween(random,.57,1))
             .addScaledVector(UP,randomBetween(random,-.52,.16)).normalize();
-          const leafLength=randomBetween(random,.12,.205)*(far?1.15:1);
+          const leafLength=randomBetween(random,.13,.23)*(far?1.15:1);
           const leafColor=new Color().setRGB(.071,.118,.041).multiplyScalar(randomBetween(random,.64,1.27));
           if(random()<.045)leafColor.setRGB(.12,.112,.052).multiplyScalar(randomBetween(random,.75,1.1));
           const detailed=attach.distanceToSquared(VIEWPOINT)<57;
@@ -516,17 +562,19 @@ function tree(spec:TreeSpec,identity:number,wood:Surface,leaves:Surface,seed:str
 }
 
 /**
- * Mature mixed woodland, built as four opaque geometry batches. Individual
+ * Mature mixed woodland, built as six opaque geometry batches. Individual
  * folded leaves have centimetre-scale silhouettes; no repeated alpha cards
  * determine the near forest outline. All materials and geometry are owned by
  * the returned group and may be released by the scene's normal traversal.
  */
-export function buildLivingForest(seed:string,heightAt:Height):{group:Group;treeCount:number} {
+export function buildLivingForest(seed:string,heightAt:Height):{
+  group:Group;treeCount:number;update(frame:EnvironmentSnapshot):void;dispose():void;
+} {
   const group=new Group();group.name='living-wet-woodland';
   const random=createRandom(`${seed}/living-forest-layout`);
   const specs:TreeSpec[]=[
     {x:-5.15,z:-2.5,height:25.4,radius:.61},
-    {x:5.85,z:-6.65,height:27.2,radius:.61},
+    {x:6.1,z:-7.4,height:27.2,radius:.47},
     {x:-7.2,z:-14.0,height:28.1,radius:.56},
     {x:8.9,z:-16.4,height:26.4,radius:.55},
     {x:-4.7,z:-8.9,height:6.7,radius:.10,young:true},
@@ -534,7 +582,9 @@ export function buildLivingForest(seed:string,heightAt:Height):{group:Group;tree
     {x:-8.2,z:-11.8,height:7.9,radius:.12,young:true},
     {x:9.1,z:-15.8,height:8.3,radius:.14,young:true},
     {x:-3.8,z:-20.1,height:10.9,radius:.19,young:true},
-    {x:5.8,z:-24.5,height:12.5,radius:.21,young:true},
+    // A mid-distance sapling breaks the straight aisle through the grove.
+    // The near hearth remains open; depth comes from overlap farther away.
+    {x:1.4,z:-21.4,height:10.7,radius:.17,young:true},
     {x:-11.5,z:-25.8,height:9.8,radius:.17,young:true},
     {x:13.1,z:-31.3,height:12.4,radius:.23,young:true},
     {x:-3.8,z:-33.8,height:11.4,radius:.22,young:true},
@@ -552,27 +602,41 @@ export function buildLivingForest(seed:string,heightAt:Height):{group:Group;tree
     const height=randomBetween(random,16.0,28.0);
     specs.push({x,z,height,radius:height*randomBetween(random,.014,.022)});
   }
-  const nearWood=new Surface(),farWood=new Surface(),nearLeaves=new Surface(),farLeaves=new Surface();
+  const nearWood=new Surface(),middleWood=new Surface(),farWood=new Surface();
+  const nearLeaves=new Surface(),middleLeaves=new Surface(),farLeaves=new Surface();
   specs.forEach((spec,i)=>{
-    const shadows=Math.hypot(spec.x+.8,spec.z+1.6)<14;
-    tree(spec,i+1,shadows?nearWood:farWood,shadows?nearLeaves:farLeaves,seed,heightAt);
+    const distance=Math.hypot(spec.x+.8,spec.z+1.6);
+    const wood=distance<14?nearWood:distance<36?middleWood:farWood;
+    const leaves=distance<14?nearLeaves:distance<36?middleLeaves:farLeaves;
+    tree(spec,i+1,wood,leaves,seed,heightAt);
   });
   const bark=barkMaterial(seed),foliar=foliageMaterial();
+  const wind=createForestWind();
+  wind.install(bark);wind.install(foliar);
+  // The scene's existing material ownership also releases auxiliary shadow
+  // passes, even when the caller disposes only the visible material set.
+  foliar.addEventListener('dispose',wind.dispose);
   const batches=[
-    {surface:nearWood,material:bark,name:'near-trunks-roots-branches',shadows:true},
-    {surface:farWood,material:bark,name:'distant-trunks-branches',shadows:false},
-    {surface:nearLeaves,material:foliar,name:'near-folded-leaves',shadows:true},
-    {surface:farLeaves,material:foliar,name:'distant-leaves',shadows:false},
+    {surface:nearWood,material:bark,name:'near-trunks-roots-branches',shadows:true,fire:true},
+    {surface:middleWood,material:bark,name:'middle-trunks-branches',shadows:true,fire:false},
+    {surface:farWood,material:bark,name:'distant-trunks-branches',shadows:false,fire:false},
+    {surface:nearLeaves,material:foliar,name:'near-folded-leaves',shadows:true,fire:true},
+    {surface:middleLeaves,material:foliar,name:'middle-folded-leaves',shadows:true,fire:false},
+    {surface:farLeaves,material:foliar,name:'distant-leaves',shadows:false,fire:false},
   ];
   for(const batch of batches) {
     const mesh=new Mesh(batch.surface.geometry(),batch.material);
     mesh.name=`living-forest-${batch.name}`;
     mesh.castShadow=batch.shadows;mesh.receiveShadow=true;
+    mesh.userData.fireShadow=batch.fire;
+    wind.attach(mesh);
     group.add(mesh);
   }
   group.userData.forest={trees:specs.length,
     triangles:batches.reduce((sum,batch)=>sum+batch.surface.indices.length/3,0),
-    shadowTriangles:(nearWood.indices.length+nearLeaves.indices.length)/3,
-    leafVertices:(nearLeaves.positions.length+farLeaves.positions.length)/3,drawCalls:4,generatedTextures:3};
-  return {group,treeCount:specs.length};
+    shadowTriangles:(nearWood.indices.length+nearLeaves.indices.length+middleWood.indices.length+middleLeaves.indices.length)/3,
+    fireShadowTriangles:(nearWood.indices.length+nearLeaves.indices.length)/3,
+    leafVertices:(nearLeaves.positions.length+middleLeaves.positions.length+farLeaves.positions.length)/3,
+    drawCalls:batches.length,generatedTextures:3};
+  return {group,treeCount:specs.length,update:wind.update,dispose:wind.dispose};
 }

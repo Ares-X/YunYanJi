@@ -2,15 +2,18 @@ import {
   DataTexture, DepthFormat, DepthTexture, HalfFloatType, LinearSRGBColorSpace,
   RepeatWrapping, RGBAFormat, UnsignedByteType, UnsignedIntType, Vector2, WebGLRenderTarget,
 } from 'three';
-import type { Camera, Scene, WebGLRenderer } from 'three';
+import type { Camera, DirectionalLight, PerspectiveCamera, PointLight, Scene, Texture, Matrix4, WebGLRenderer } from 'three';
 import { SimplexNoise } from 'three/addons/math/SimplexNoise.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { createRandom } from '../core/random';
 import type { QualityLevel } from '../core/types';
+import type { EnvironmentSnapshot } from '../core/types';
+import { ForestAtmospherePass } from './ForestAtmospherePass';
 
 function createDenoiseNoise(seed: string): DataTexture {
   const simplex = new SimplexNoise({ random: createRandom(`${seed}/ambient-occlusion`) });
@@ -38,8 +41,15 @@ function createDenoiseNoise(seed: string): DataTexture {
  * horizon search and its edge-aware denoiser run at half linear resolution.
  */
 class SharedDepthGTAOPass extends GTAOPass {
+  private readonly multiply: FullScreenQuad;
+
   constructor(scene: Scene, camera: Camera, depth: DepthTexture, seed: string) {
     super(scene, camera, 1, 1, { depthTexture: depth });
+    // Keep the beauty colour and its depth in the same composer buffer. The
+    // addon's default output copies only colour before swapping buffers.
+    this.needsSwap = false;
+    this.output = GTAOPass.OUTPUT.Off;
+    this.multiply = new FullScreenQuad(this.blendMaterial);
     this.pdNoiseTexture.dispose();
     this.pdNoiseTexture = createDenoiseNoise(seed);
     this.pdMaterial.uniforms.tNoise!.value = this.pdNoiseTexture;
@@ -75,6 +85,18 @@ class SharedDepthGTAOPass extends GTAOPass {
     // rebinding every frame, which would needlessly invalidate shader programs.
     if (this.depthTexture !== depth) this.setGBuffer(depth);
     super.render(renderer, writeBuffer, readBuffer, deltaTime, maskActive);
+    // Fixed-function blending reads the destination without sampling it, so
+    // this in-place multiply has no texture feedback and preserves depth.
+    this.blendMaterial.uniforms.intensity!.value = this.blendIntensity;
+    this.blendMaterial.uniforms.tDiffuse!.value = this.pdRenderTarget.texture;
+    const autoClear = renderer.autoClear;
+    renderer.autoClear = false;
+    try {
+      renderer.setRenderTarget(readBuffer);
+      this.multiply.render(renderer);
+    } finally {
+      renderer.autoClear = autoClear;
+    }
   }
 
   override dispose(): void {
@@ -82,11 +104,12 @@ class SharedDepthGTAOPass extends GTAOPass {
     // The installed addon does not release these two owned materials itself.
     this.gtaoMaterial.dispose();
     this.blendMaterial.dispose();
+    this.multiply.dispose();
   }
 }
 
 /**
- * A linear-light finish: main image -> local occlusion -> fire bloom -> output.
+ * Linear HDR: main image -> local occlusion -> lit mist -> fire bloom -> output.
  * OutputPass performs the renderer's tone mapping and sRGB conversion exactly
  * once. Restrained HDR bloom is reserved for fire and reflected ember radiance;
  * there is no fixed noise image, colour filter or depth-of-field.
@@ -95,13 +118,15 @@ class SharedDepthGTAOPass extends GTAOPass {
 export class LandscapePostProcessing {
   private readonly composer: EffectComposer;
   private readonly occlusion: SharedDepthGTAOPass;
+  private readonly atmosphere: ForestAtmospherePass;
   private readonly output = new OutputPass();
   private readonly bloom = new UnrealBloomPass(new Vector2(1, 1), 0.12, 0.42, 1.1);
   private quality: QualityLevel;
   private disposed = false;
 
   constructor(renderer: WebGLRenderer, scene: Scene,
-    camera: Camera, quality: QualityLevel = 'high', seed = 'rainfire') {
+    camera: PerspectiveCamera, sun: DirectionalLight, fire: PointLight | undefined,
+    canopyTexture: Texture, canopyMatrix: Matrix4, quality: QualityLevel = 'high', seed = 'rainfire') {
     this.quality = quality;
     const depth = new DepthTexture(1, 1, UnsignedIntType);
     depth.format = DepthFormat;
@@ -117,8 +142,10 @@ export class LandscapePostProcessing {
     // WorldRenderer already computes a bounded drawing-buffer pixel size.
     this.composer.setPixelRatio(1);
     this.occlusion = new SharedDepthGTAOPass(scene, camera, depth, seed);
+    this.atmosphere = new ForestAtmospherePass(camera, sun, fire, canopyTexture, canopyMatrix, quality);
     this.composer.addPass(new RenderPass(scene, camera));
     this.composer.addPass(this.occlusion);
+    this.composer.addPass(this.atmosphere);
     this.composer.addPass(this.bloom);
     this.composer.addPass(this.output);
     this.setQuality(quality);
@@ -130,6 +157,7 @@ export class LandscapePostProcessing {
 
   setQuality(quality: QualityLevel): void {
     this.quality = quality;
+    this.atmosphere.setQuality(quality);
     this.occlusion.enabled = quality !== 'low';
     this.bloom.enabled = quality !== 'low';
     this.bloom.strength = quality === 'high' ? 0.12 : 0.09;
@@ -143,8 +171,9 @@ export class LandscapePostProcessing {
     }
   }
 
-  render(): void {
+  render(frame: EnvironmentSnapshot): void {
     if (this.disposed) return;
+    this.atmosphere.update(frame);
     this.composer.render(0);
   }
 
@@ -152,6 +181,7 @@ export class LandscapePostProcessing {
   invalidate(): void {
     this.composer.renderTarget1.dispose();
     this.composer.renderTarget2.dispose();
+    this.atmosphere.invalidate();
     this.occlusion.gtaoRenderTarget.dispose();
     this.occlusion.pdRenderTarget.dispose();
     this.bloom.renderTargetBright.dispose();
@@ -162,13 +192,15 @@ export class LandscapePostProcessing {
 
   diagnostics() {
     return { ambientOcclusion: this.quality !== 'low', bloom: this.bloom.enabled,
-      occlusionWidth: this.occlusion.width, occlusionHeight: this.occlusion.height };
+      occlusionWidth: this.occlusion.width, occlusionHeight: this.occlusion.height,
+      ...this.atmosphere.diagnostics() };
   }
 
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
     this.occlusion.dispose();
+    this.atmosphere.dispose();
     this.output.dispose();
     this.bloom.dispose();
     // r187 does not release its high-pass material in the addon dispose().
