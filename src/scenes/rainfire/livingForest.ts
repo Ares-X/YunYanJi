@@ -6,6 +6,8 @@ import { createRandom, randomBetween } from '../../core/random';
 import { BARK_WIDTH_METRES, BARK_HEIGHT_METRES, createBarkReliefSampler, createBarkSurface } from './barkSurface';
 import { growSpaceTree } from './forestGrowth';
 import { createForestWind } from './forestWind';
+import { forestFireShadowBounds, limitForestFireShadows } from './forestFireShadows';
+import { FIRE_X, FIRE_Z } from './rainLandscape';
 import type { EnvironmentSnapshot } from '../../core/types';
 
 const UP = new Vector3(0, 1, 0);
@@ -442,18 +444,22 @@ export function buildLivingForest(seed:string,heightAt:Height):{
     {surface:middleLeaves,material:foliar,name:'middle-folded-leaves',shadows:true,fire:false},
     {surface:farLeaves,material:foliar,name:'distant-leaves',shadows:false,fire:false},
   ];
+  const fireBounds=forestFireShadowBounds(new Vector3(FIRE_X,heightAt(FIRE_X,FIRE_Z)+.006,FIRE_Z));
+  let fireShadowTriangles=0;
   for(const batch of batches) {
     const mesh=new Mesh(batch.surface.geometry(),batch.material);
     mesh.name=`living-forest-${batch.name}`;
     mesh.castShadow=batch.shadows;mesh.receiveShadow=true;
     mesh.userData.fireShadow=batch.fire;
     wind.attach(mesh);
+    if(batch.fire)fireShadowTriangles+=limitForestFireShadows(mesh,fireBounds);
     group.add(mesh);
   }
   group.userData.forest={trees:specs.length,
     triangles:batches.reduce((sum,batch)=>sum+batch.surface.indices.length/3,0),
     shadowTriangles:batches.reduce((sum,batch)=>sum+(batch.shadows?batch.surface.indices.length/3:0),0),
-    fireShadowTriangles:(nearWood.indices.length+nearLeaves.indices.length)/3,
+    fireShadowTriangles,
+    fireShadowSourceTriangles:(nearWood.indices.length+nearLeaves.indices.length)/3,
     leafVertices:(nearLeaves.positions.length+middleLeaves.positions.length+farLeaves.positions.length)/3,
     drawCalls:6,generatedTextures:3};
   return {group,treeCount:specs.length,update:wind.update,

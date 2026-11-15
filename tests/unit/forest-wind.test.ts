@@ -71,7 +71,7 @@ describe('forest wind and canopy', () => {
   it('keeps leaf attachments and canopy shadow tiers inside the forest geometry budget', () => {
     const forest = buildLivingForest('rainfire-01', createRainHeight('rainfire-01'));
     const materials = new Set<Material>();
-    let triangles = 0, roots = 0, leaves = 0;
+    let triangles = 0, roots = 0, leaves = 0, fireSource = 0, firePrefix = 0;
     try {
       expect(forest.group.children).toHaveLength(6);
       for (const object of forest.group.children) {
@@ -88,6 +88,11 @@ describe('forest wind and canopy', () => {
         expect(windRoots.array.every(Number.isFinite)).toBe(true);
         expect(anchors.array.every(Number.isFinite)).toBe(true);
         triangles += mesh.geometry.index!.count / 3;
+        expect(mesh.geometry.drawRange).toEqual({ start: 0, count: Infinity });
+        if (mesh.userData.fireShadow) {
+          fireSource += mesh.geometry.index!.count / 3;
+          firePrefix += Number(mesh.userData.fireShadowTriangles);
+        }
         if (mesh.name.includes('middle')) {
           expect(mesh.castShadow).toBe(true);
           expect(mesh.userData.fireShadow).toBe(false);
@@ -104,6 +109,10 @@ describe('forest wind and canopy', () => {
       expect(triangles).toBeLessThan(1_000_000);
       expect(forest.group.userData.forest.fireShadowTriangles)
         .toBeLessThan(forest.group.userData.forest.shadowTriangles);
+      expect(forest.group.userData.forest.fireShadowSourceTriangles).toBe(fireSource);
+      expect(forest.group.userData.forest.fireShadowTriangles).toBe(firePrefix);
+      expect(firePrefix).toBeGreaterThan(0);
+      expect(firePrefix).toBeLessThan(fireSource);
     } finally {
       forest.dispose();
       forest.group.traverse(object => { if (object instanceof Mesh) object.geometry.dispose(); });

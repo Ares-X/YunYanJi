@@ -157,8 +157,9 @@ test('previews settings, updates procedural rendering and releases resources', a
   expect(beforeQuality.paused).toBe(false);
   expect(beforeQuality.audioState).toBe('playing');
   await page.getByRole('combobox', { name: '画质', exact: true }).selectOption('low');
-  // A quality change schedules its static redraw on the next animation frame.
-  await expect.poll(async () => Number((await state(page)).reflectionUpdates))
+  // The UI action is bounded separately. Its static redraw may sit behind an
+  // already-submitted GPU frame, so use the established 45 s render budget.
+  await expect.poll(async () => Number((await state(page)).reflectionUpdates), { timeout: 45_000 })
     .toBeGreaterThan(Number(beforeQuality.reflectionUpdates));
   const afterQuality = await state(page);
   expect(afterQuality.quality).toBe('low');
@@ -182,7 +183,7 @@ test('previews settings, updates procedural rendering and releases resources', a
   // needle coverage or leaving the reflection at its low-resolution target.
   const beforeHigh = await state(page);
   await page.getByRole('combobox', { name: '画质', exact: true }).selectOption('high');
-  await expect.poll(async () => Number((await state(page)).reflectionUpdates))
+  await expect.poll(async () => Number((await state(page)).reflectionUpdates), { timeout: 45_000 })
     .toBeGreaterThan(Number(beforeHigh.reflectionUpdates));
   await expect.poll(async () => {
     const current = await state(page);
@@ -239,6 +240,14 @@ test('starts still for reduced motion and recovers from WebGL context loss', asy
   await expect(page.locator('#app')).toHaveAttribute('data-ready', 'true');
   expect((await state(page)).paused).toBe(true);
   expect((await state(page)).elapsed).toBe(0);
+  // A probe is cached across live-quality changes. Restoring at a different
+  // shadow resolution must preserve the same static indirect illumination.
+  const initialQuality = (await state(page)).quality;
+  await page.getByRole('button', { name: '设置', exact: true }).click();
+  await page.getByRole('combobox', { name: '画质', exact: true })
+    .selectOption(initialQuality === 'high' ? 'medium' : 'high');
+  await settledLighting(page, 0);
+  await page.getByRole('button', { name: '关闭设置' }).click();
   // Also restore a scene that has already evolved: animated fire/rain and the
   // cached sky environment must retain the same frozen lighting after loss.
   await page.emulateMedia({ reducedMotion: 'no-preference' });

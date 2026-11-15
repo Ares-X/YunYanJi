@@ -81,7 +81,11 @@ const volumeFragment = /* glsl */ `
     float distance=min(linearDepth(depth)/max(.05,-viewRay.z),140.0);
     // Quadratic spacing spends samples on nearby fire-lit haze and ground mist.
     // The sampling pattern is fixed in screen space: a paused image never shimmers.
-    float jitter=fract(52.9829189*fract(dot(gl_FragCoord.xy,vec2(.06711056,.00583715))));
+    // A decorrelated hash avoids the visible diagonal lattice produced by an
+    // interleaved gradient sequence when integrating sparse leaf shadows.
+    vec3 random=fract(vec3(gl_FragCoord.xyx)*vec3(.1031,.1030,.0973));
+    random+=dot(random,random.yzx+33.33);
+    float jitter=fract((random.x+random.y)*random.z);
     vec3 scatter=vec3(0); float transmission=1.0;
     float facing=max(0.0,dot(ray,uSunDirection));
     float phase=.65+1.4*pow(facing,5.0);
@@ -103,8 +107,8 @@ const volumeFragment = /* glsl */ `
         *(.72+.38*uRain)*mix(.40,1.0,nearClear);
       float sky=canopy(p);
       float sun=sunlight(p);
-      vec3 incident=uHaze*(.50+.32*sky)
-        +uSunColor*(.12+.40*sky)*sun*phase;
+      vec3 incident=uHaze*(.40+.24*sky)
+        +uSunColor*(.04+.20*sky)*sun*phase;
       vec3 toFire=uFirePosition-p;
       float radius2=dot(toFire,toFire);
       if(radius2<100.0) {
@@ -116,6 +120,30 @@ const volumeFragment = /* glsl */ `
       transmission*=stepTransmission;
     }
     gl_FragColor=vec4(scatter,transmission);
+  }
+`;
+
+const denoiseFragment = /* glsl */ `
+  varying vec2 vUv;
+  uniform sampler2D tMist,tDepth;
+  uniform vec2 uDirection;
+  uniform float uNear,uFar;
+  float linearDepth(float d) { return uNear*uFar/(uFar-d*(uFar-uNear)); }
+  void main() {
+    float centre=linearDepth(texture2D(tDepth,vUv).r);
+    vec4 sum=texture2D(tMist,vUv)*.227027;
+    float weights=.227027;
+    // Blur the low-resolution scattering, never the scene's colour. Reject
+    // distant samples at nearby silhouettes so mist cannot wash over a trunk.
+    for(int side=-1;side<=1;side+=2)for(int tap=0;tap<2;tap++) {
+      float offset=tap==0?1.384615:3.230769;
+      float kernel=tap==0?.316216:.070270;
+      vec2 uv=clamp(vUv+uDirection*offset*float(side),vec2(0),vec2(1));
+      float depth=linearDepth(texture2D(tDepth,uv).r);
+      float weight=kernel/(1.0+abs(depth-centre)*3.0);
+      sum+=texture2D(tMist,uv)*weight;weights+=weight;
+    }
+    gl_FragColor=sum/weights;
   }
 `;
 
@@ -150,7 +178,11 @@ export class ForestAtmospherePass extends Pass {
   private readonly target = new WebGLRenderTarget(1,1,{
     type:HalfFloatType,depthBuffer:false,minFilter:LinearFilter,magFilter:LinearFilter,
   });
+  private readonly temporary = new WebGLRenderTarget(1,1,{
+    type:HalfFloatType,depthBuffer:false,minFilter:LinearFilter,magFilter:LinearFilter,
+  });
   private readonly volume: ShaderMaterial;
+  private readonly denoise: ShaderMaterial;
   private readonly composite: ShaderMaterial;
   private readonly quad: FullScreenQuad;
   private quality: QualityLevel;
@@ -176,11 +208,17 @@ export class ForestAtmospherePass extends Pass {
         uFireRange:{value:new Vector2(.08,12)},
         uInverseProjection:{value:camera.projectionMatrixInverse},uCameraWorld:{value:camera.matrixWorld},
         uCamera:{value:camera.position},uSunDirection:{value:new Vector3()},
-        uSunColor:{value:new Color()},uHaze:{value:new Color('#667f87')},
+        uSunColor:{value:new Color()},uHaze:{value:new Color('#425b66')},
         uFirePosition:{value:this.fireWorld},uFireColor:{value:new Color()},uFireIntensity:{value:0},
         uWind:{value:new Vector2()},uTime:{value:0},uRain:{value:.72},uSteps:{value:STEPS[quality]},
         uNear:{value:camera.near},uFar:{value:camera.far},
       },
+    });
+    this.temporary.texture.name='forest-mist-denoise';
+    this.denoise=new ShaderMaterial({
+      depthTest:false,depthWrite:false,toneMapped:false,vertexShader:vertex,fragmentShader:denoiseFragment,
+      uniforms:{tMist:{value:this.target.texture},tDepth:{value:this.depthField.texture},
+        uDirection:{value:new Vector2()},uNear:{value:camera.near},uFar:{value:camera.far}},
     });
     this.composite=new ShaderMaterial({
       depthTest:false,depthWrite:false,toneMapped:false,vertexShader:vertex,fragmentShader:compositeFragment,
@@ -203,6 +241,7 @@ export class ForestAtmospherePass extends Pass {
   override setSize(width:number,height:number):void {
     const scale=this.quality==='low'?.35:.5;
     this.target.setSize(Math.max(1,Math.ceil(width*scale)),Math.max(1,Math.ceil(height*scale)));
+    this.temporary.setSize(this.target.width,this.target.height);
     (this.composite.uniforms.uMistSize!.value as Vector2).set(this.target.width,this.target.height);
   }
 
@@ -239,17 +278,26 @@ export class ForestAtmospherePass extends Pass {
     }
     this.quad.material=this.volume;
     renderer.setRenderTarget(this.target);this.quad.render(renderer);
+    const direction=this.denoise.uniforms.uDirection!.value as Vector2;
+    this.quad.material=this.denoise;
+    this.denoise.uniforms.tMist!.value=this.target.texture;
+    direction.set(1/this.target.width,0);
+    renderer.setRenderTarget(this.temporary);this.quad.render(renderer);
+    this.denoise.uniforms.tMist!.value=this.temporary.texture;
+    direction.set(0,1/this.target.height);
+    renderer.setRenderTarget(this.target);this.quad.render(renderer);
     this.composite.uniforms.tDiffuse!.value=read.texture;
     this.composite.uniforms.tDepth!.value=this.depthField.texture;
     this.quad.material=this.composite;
     renderer.setRenderTarget(this.renderToScreen?null:write);this.quad.render(renderer);
   }
 
-  invalidate():void {this.target.dispose();this.noise.needsUpdate=true;}
+  invalidate():void {this.target.dispose();this.temporary.dispose();this.noise.needsUpdate=true;}
   diagnostics():Record<string,number> {
     return {mistSteps:STEPS[this.quality],mistWidth:this.target.width,mistHeight:this.target.height};
   }
   override dispose():void {
-    this.target.dispose();this.noise.dispose();this.volume.dispose();this.composite.dispose();this.quad.dispose();
+    this.target.dispose();this.temporary.dispose();this.noise.dispose();
+    this.volume.dispose();this.denoise.dispose();this.composite.dispose();this.quad.dispose();
   }
 }

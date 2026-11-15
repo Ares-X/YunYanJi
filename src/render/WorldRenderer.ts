@@ -97,10 +97,7 @@ export class WorldRenderer {
       this.canopy.setEnvironmentCapture(true);
       // The probe already sees canopy geometry: do not bake the extra spatial
       // sky estimate into it and then apply that estimate for a second time.
-      this.sun.shadow.needsUpdate = true;
-      this.renderer.shadowMap.needsUpdate = true;
-      this.environment = captureForestEnvironment(this.renderer, this.scene,
-        this.sky.mesh, new Vector3(-.3, 1.7, -2.3));
+      this.environment = this.captureEnvironment();
     } finally {
       this.sky.setEnvironmentCapture(false);
       this.canopy.setEnvironmentCapture(false);
@@ -115,6 +112,35 @@ export class WorldRenderer {
     this.sun.shadow.needsUpdate = true;
     this.fireLights.forEach(light => { light.shadow.needsUpdate = true; });
     this.renderer.shadowMap.needsUpdate = true;
+  }
+
+  private captureEnvironment(): WebGLCubeRenderTarget {
+    // A quality switch does not recapture static IBL. Its eventual restoration
+    // must therefore use the same shadowed probe, even if live shadows are off.
+    const shadow = this.sun.shadow;
+    const previous = {
+      map: shadow.map, size: shadow.mapSize.clone(), cast: this.sun.castShadow,
+      enabled: this.renderer.shadowMap.enabled, needsUpdate: shadow.needsUpdate,
+      globalNeedsUpdate: this.renderer.shadowMap.needsUpdate,
+    };
+    shadow.map = null;
+    shadow.mapSize.set(1024, 1024);
+    this.sun.castShadow = this.renderer.shadowMap.enabled = true;
+    shadow.needsUpdate = this.renderer.shadowMap.needsUpdate = true;
+    try {
+      return captureForestEnvironment(this.renderer, this.scene,
+        this.sky.mesh, new Vector3(-.3, 1.7, -2.3));
+    } finally {
+      // Three allocates this lazily inside the capture's render call.
+      const temporary = shadow.map as typeof previous.map;
+      shadow.map = previous.map;
+      shadow.mapSize.copy(previous.size);
+      this.sun.castShadow = previous.cast;
+      this.renderer.shadowMap.enabled = previous.enabled;
+      shadow.needsUpdate = previous.needsUpdate;
+      this.renderer.shadowMap.needsUpdate = previous.globalNeedsUpdate;
+      if (temporary && temporary !== previous.map) temporary.dispose();
+    }
   }
 
   resize(width: number, height: number, dpr = window.devicePixelRatio): void {
