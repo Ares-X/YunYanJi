@@ -19,7 +19,9 @@ describe('rain forest refuge', () => {
     }
   });
 
-  it('bounds scene geometry, preserves flame attributes across quality changes, and releases shared resources once', () => {
+  // This builds the full CPU world and checks every vertex/index. The hosted
+  // runner needs about 5.5s; the default 5s unit budget is not a frame budget.
+  it('bounds scene geometry, preserves flame attributes across quality changes, and releases shared resources once', { timeout: 15_000 }, () => {
     const scene = createRainfireWorld({ seed: 'rainfire-01', quality: 'medium' });
     const geometries = new Set<BufferGeometry>(), materials = new Set<Material>();
     let triangles = 0;
