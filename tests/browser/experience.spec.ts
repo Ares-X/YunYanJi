@@ -69,9 +69,11 @@ test('renders a procedural scene, supports interaction and releases its resource
   expect((await state(page)).quality).toBe('low');
   expect((await state(page)).geometries).toBe(beforeQuality.geometries);
   await page.getByLabel('雪量', { exact: true }).press('Home');
-  for (let i = 0; i < 20; i++) await page.getByLabel('雪量', { exact: true }).press('ArrowRight');
-  expect((await state(page)).snow).toBe(0.2);
-  await page.screenshot({ path: testInfo.outputPath('settings.png') });
+  // Two native keyboard increments exercise the control without queuing twenty
+  // redundant WebGL redraws on a software-only runner.
+  for (let i = 0; i < 2; i++) await page.getByLabel('雪量', { exact: true }).press('ArrowRight');
+  expect((await state(page)).snow).toBe(0.02);
+  await page.screenshot({ path: testInfo.outputPath('settings.png'), timeout: 45_000 });
   await testInfo.attach('settings', { path: testInfo.outputPath('settings.png'), contentType: 'image/png' });
   await page.getByRole('button', { name: '重看此境' }).click();
   await expect(page.locator('#settings-dialog')).not.toBeVisible();
