@@ -25,10 +25,28 @@ test('renders a procedural scene, supports interaction and releases its resource
   await testInfo.attach('courtyard', { path: testInfo.outputPath('courtyard.png'), contentType: 'image/png' });
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
   expect(overflow).toBe(false);
+  await expect(page.locator('#hint')).toHaveText('已暂停，点继续或起风');
+  for (const selector of ['.masthead', '.verse', '.scene-footer']) {
+    const box = await page.locator(selector).boundingBox();
+    const viewport = page.viewportSize()!;
+    expect(box).not.toBeNull();
+    expect(box!.x).toBeGreaterThanOrEqual(0);
+    expect(box!.y).toBeGreaterThanOrEqual(0);
+    expect(box!.x + box!.width).toBeLessThanOrEqual(viewport.width);
+    expect(box!.y + box!.height).toBeLessThanOrEqual(viewport.height);
+  }
 
   await page.getByRole('button', { name: '起风', exact: true }).click();
   await expect.poll(async () => Number((await state(page)).gust)).toBeGreaterThan(0.005);
   expect((await state(page)).paused).toBe(false);
+  for (const distance of [40, 20]) {
+    const before = Number((await state(page)).viewX);
+    await page.mouse.move(100, 400);
+    await page.mouse.down();
+    await page.mouse.move(100 + distance, 400, { steps: 3 });
+    await page.mouse.up();
+    expect(Number((await state(page)).viewX)).toBeGreaterThan(before);
+  }
   await page.getByRole('button', { name: '声音 关', exact: true }).click();
   await expect.poll(async () => (await state(page)).audioState).toBe('playing');
   await page.getByRole('button', { name: '暂停', exact: true }).click();
@@ -42,8 +60,12 @@ test('renders a procedural scene, supports interaction and releases its resource
   await expect.poll(async () => (await state(page)).suspended).toBe(true);
   await page.getByRole('button', { name: '关闭诗文' }).click();
   await page.getByRole('button', { name: '设置', exact: true }).click();
+  await expect.poll(async () => (await state(page)).audioState).toBe('playing');
+  await page.getByRole('slider', { name: '声音音量', exact: true }).press('Home');
+  await page.getByRole('slider', { name: '声音音量', exact: true }).press('ArrowRight');
+  expect((await state(page)).audioVolume).toBe(0.01);
   const beforeQuality = await state(page);
-  await page.getByLabel('画质', { exact: true }).selectOption('low');
+  await page.getByRole('combobox', { name: '画质', exact: true }).selectOption('low');
   expect((await state(page)).quality).toBe('low');
   expect((await state(page)).geometries).toBe(beforeQuality.geometries);
   await page.getByLabel('雪量', { exact: true }).press('Home');

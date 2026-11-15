@@ -266,8 +266,8 @@ function buildRocks(parent: Group, seed: string, m: CourtyardMaterials): void {
     addRock(-1.25 + Math.cos(angle) * 2.5 * radius, 0.9 + Math.sin(angle) * 1.72 * radius,
       randomBetween(random, 0.25, 0.50), randomBetween(random, 0.16, 0.34), randomBetween(random, 0.22, 0.42));
   }
-  addRock(4.15, -0.92, 0.83, 0.62, 0.63);
-  addRock(4.8, -1.45, 0.48, 0.40, 0.41);
+  addRock(-4.17, -3.12, 0.83, 0.62, 0.63);
+  addRock(-4.92, -3.72, 0.48, 0.40, 0.41);
   addRock(-5.9, 2.3, 0.67, 0.42, 0.52);
   const stones = mergeGeometries(stoneParts);
   if (stones) mesh(stones, m.stone, parent);
@@ -338,27 +338,40 @@ function buildReeds(parent: Group, seed: string): void {
 
 function buildDistance(parent: Group, seed: string, m: CourtyardMaterials): void {
   const random = createRandom(`${seed}/distant-hills`);
-  for (let layer = 0; layer < 3; layer += 1) {
-    const vertices: number[] = [];
-    const indices: number[] = [];
-    for (let i = 0; i <= 64; i += 1) {
-      const x = (i / 64 - 0.5) * (65 + layer * 32);
-      const y = 3.0 + layer * 2.2 + Math.sin(i * 0.13 + layer * 1.5) * 3.1 + Math.sin(i * 0.29 + 0.3) * 1.8 + random() * 0.2;
-      vertices.push(x, -1, -29 - layer * 18, x, y, -29 - layer * 18);
-      if (i < 64) indices.push(i * 2, i * 2 + 2, i * 2 + 1, i * 2 + 1, i * 2 + 2, i * 2 + 3);
-    }
-    const geometry = new BufferGeometry();
-    geometry.setAttribute('position', new Float32BufferAttribute(vertices, 3));
-    geometry.setIndex(indices);
-    geometry.computeVertexNormals();
-    const material = new MeshStandardMaterial({ color: layer === 0 ? 0x84999c : 0x96a8ac, roughness: 1 });
-    const hill = mesh(geometry, material, parent);
-    hill.castShadow = false;
+  const phase = random() * Math.PI * 2;
+  // A continuous horizontal heightfield gives mountains depth. It extends beyond
+  // the camera frustum and blends into the ground, so no upright board edges show.
+  const terrain = new PlaneGeometry(320, 100, 128, 56);
+  terrain.rotateX(-Math.PI / 2);
+  terrain.translate(0, 0, -70);
+  const positions = terrain.getAttribute('position');
+  for (let i = 0; i < positions.count; i += 1) {
+    const x = positions.getX(i);
+    const distance = -positions.getZ(i);
+    const frontBlend = Math.max(0, Math.min(1, (distance - 20) / 12));
+    const smoothBlend = frontBlend * frontBlend * (3 - 2 * frontBlend);
+    const nearRidge = (6.5 + Math.sin(x * 0.071 + phase) * 3.0 + Math.sin(x * 0.17 + 1.2) * 1.8)
+      * Math.exp(-(((distance - 43) / 13) ** 2));
+    const farRidge = (13.0 + Math.sin(x * 0.048 + phase + 1.6) * 5.2 + Math.sin(x * 0.094) * 2.5)
+      * Math.exp(-(((distance - 78) / 21) ** 2));
+    const detail = Math.sin(x * 0.31 + distance * 0.19) * Math.sin(distance * 0.32) * 0.16;
+    positions.setY(i, -0.03 + (Math.max(nearRidge, farRidge) + detail) * smoothBlend);
   }
-  for (let i = 0; i < 7; i += 1) {
+  terrain.computeVertexNormals();
+  const mountainMaterial = new MeshStandardMaterial({ color: 0x8fa3a8, roughness: 1 });
+  const mountains = mesh(terrain, mountainMaterial, parent);
+  mountains.name = 'continuous-distant-terrain';
+  mountains.castShadow = false;
+  mountains.receiveShadow = false;
+
+  // Keep distant roots behind the enclosure. Previously tall isolated trunks in
+  // the open, unshadowed snow read as floating against the distant mountains.
+  const distantPositions = [[-7, -14.5], [-2.5, -15.8], [6.2, -14.2]] as const;
+  for (let i = 0; i < distantPositions.length; i += 1) {
+    const [x, z] = distantPositions[i]!;
     const tree = buildTree(`${seed}/distant/${i}`, m);
-    tree.position.set(-16 + i * 5.0 + random(), 0, -17 - random() * 6);
-    tree.scale.setScalar(randomBetween(random, 0.9, 1.45));
+    tree.position.set(x, -0.04, z);
+    tree.scale.setScalar(randomBetween(random, 0.86, 1.10));
     parent.add(tree);
   }
 }
@@ -386,14 +399,11 @@ export function buildCourtyard(seed: string, m: CourtyardMaterials): CourtyardGe
   buildReeds(group, seed);
   buildDistance(group, seed, m);
   const tree = buildTree(seed, m);
-  tree.position.set(4.55, 0, -1.7);
+  // Place the main tree beside the pond, leaving the stepping-stone path and
+  // moon gate clear from the authored eye-level camera.
+  tree.position.set(-4.45, 0, -3.6);
   tree.rotation.y = -0.45;
   group.add(tree);
-  const secondTree = buildTree(`${seed}/left-tree`, m);
-  secondTree.position.set(-6.15, 0, -2.45);
-  secondTree.scale.setScalar(0.70);
-  secondTree.rotation.y = 1.9;
-  group.add(secondTree);
   const waterMaterial = new MeshStandardMaterial({ color: 0x536d77, roughness: 0.23, metalness: 0.36, envMapIntensity: 1.3 });
   const water = mesh(new CircleGeometry(1, 72), waterMaterial, group);
   water.rotation.x = -Math.PI / 2;

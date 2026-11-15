@@ -19,7 +19,7 @@ async function start(): Promise<() => void> {
   const events = new AbortController();
   let quality: QualityPreference = 'auto';
   let manualPause = reducedMotion.matches;
-  let dialogOpen = false;
+  let activeDialog: 'poem' | 'settings' | null = null;
   let contextLost = false;
   let restoring = false;
   let disposed = false;
@@ -30,7 +30,9 @@ async function start(): Promise<() => void> {
   let frameCount = 0;
   let lastFrameMs = 0;
   weather.reducedMotion = reducedMotion.matches;
-  const suspended = () => manualPause || dialogOpen || document.hidden || contextLost || disposed;
+  const suspended = () => manualPause || activeDialog !== null || document.hidden || contextLost || disposed;
+  // Keep an already-enabled ambience audible while adjusting its volume.
+  const audioSuspended = () => manualPause || activeDialog === 'poem' || document.hidden || contextLost || disposed;
 
   const renderStill = () => {
     if (world && prepared && !contextLost && !disposed) world.render(weather.snapshot());
@@ -54,7 +56,7 @@ async function start(): Promise<() => void> {
     cancelAnimationFrame(raf);
     raf = 0;
     lastTime = 0;
-    void audio.setSuspended(suspended()).catch(() => ui.notify('声音暂时中断，可重新开启。'));
+    void audio.setSuspended(audioSuspended()).catch(() => ui.notify('声音暂时中断，可重新开启。'));
     ui.setPaused(manualPause);
     if (!suspended() && world && prepared) raf = requestAnimationFrame(frame);
     else renderStill();
@@ -93,7 +95,7 @@ async function start(): Promise<() => void> {
       await navigator.clipboard.writeText(link);
       ui.notify('此境的链接已复制。');
     },
-    dialogChanged: (value) => { dialogOpen = value; syncPlayback(); },
+    dialogChanged: (value) => { activeDialog = value; syncPlayback(); },
   });
   ui.setPaused(manualPause);
 
@@ -131,7 +133,7 @@ async function start(): Promise<() => void> {
   ui.canvas.addEventListener('pointercancel', (event) => release(event, true), options);
   ui.canvas.addEventListener('lostpointercapture', () => { down = undefined; }, options);
   document.addEventListener('keydown', (event) => {
-    if (dialogOpen || event.repeat || (event.target !== document.body && event.target !== ui.canvas)) return;
+    if (activeDialog !== null || event.repeat || (event.target !== document.body && event.target !== ui.canvas)) return;
     if (event.code === 'Space') { event.preventDefault(); triggerGust(); }
     if (event.code === 'KeyP') { manualPause = !manualPause; syncPlayback(); }
   }, options);
@@ -197,7 +199,7 @@ async function start(): Promise<() => void> {
       getState: () => ({ seed, poem: poem.id, elapsed: weather.elapsed, gust: weather.snapshot().gust,
         snow: weather.snowIntensity, paused: manualPause, suspended: suspended(), disposed, contextLost,
         frames: frameCount, lastRenderCpuMs: lastFrameMs,
-        audioEnabled: audio.enabled, audioState: audio.state, audioContext: audio.contextState,
+        audioEnabled: audio.enabled, audioState: audio.state, audioContext: audio.contextState, audioVolume: audio.volume,
         ...world?.diagnostics() }),
       dispose,
     };

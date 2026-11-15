@@ -10,7 +10,7 @@ export interface ShellActions {
   setQuality: (quality: QualityPreference) => void;
   reset: () => void;
   share: () => Promise<void>;
-  dialogChanged: (open: boolean) => void;
+  dialogChanged: (dialog: 'poem' | 'settings' | null) => void;
 }
 
 export class Shell {
@@ -83,13 +83,14 @@ export class Shell {
     on(get('#quality'), 'change', (event) => actions.setQuality((event.target as HTMLSelectElement).value as QualityPreference));
     on(get('#reset'), 'click', () => { actions.reset(); get<HTMLDialogElement>('#settings-dialog').close(); });
     on(get('#share'), 'click', () => { void actions.share().catch(() => this.notify('复制暂不可用，可复制地址栏分享此境。')); });
-    on(get('#read'), 'click', () => { get<HTMLDialogElement>('#poem-dialog').showModal(); actions.dialogChanged(true); });
-    on(get('#settings'), 'click', () => { get<HTMLDialogElement>('#settings-dialog').showModal(); actions.dialogChanged(true); });
+    on(get('#read'), 'click', () => { get<HTMLDialogElement>('#poem-dialog').showModal(); actions.dialogChanged('poem'); });
+    on(get('#settings'), 'click', () => { get<HTMLDialogElement>('#settings-dialog').showModal(); actions.dialogChanged('settings'); });
     for (const dialog of this.dialogs) {
       on(dialog.querySelector('[data-close]')!, 'click', () => dialog.close());
       on(dialog, 'close', () => {
         if (this.notice.parentElement === dialog) this.root.append(this.notice);
-        actions.dialogChanged(this.dialogs.some((item) => item.open));
+        const active = this.dialogs.find((item) => item.open);
+        actions.dialogChanged(active ? (active.id === 'poem-dialog' ? 'poem' : 'settings') : null);
       });
       on(dialog, 'click', (event) => {
         if (event.target !== dialog) return;
@@ -101,7 +102,14 @@ export class Shell {
   }
 
   ready(): void { this.root.dataset.ready = 'true'; this.loading.hidden = true; }
-  setPaused(paused: boolean): void { this.pause.textContent = paused ? '继续' : '暂停'; this.pause.setAttribute('aria-pressed', String(paused)); }
+  setPaused(paused: boolean): void {
+    this.pause.textContent = paused ? '继续' : '暂停';
+    this.pause.setAttribute('aria-pressed', String(paused));
+    this.root.querySelector('#hint')!.textContent = paused ? '已暂停，点继续或起风' : '轻划画面，唤一阵风';
+    this.canvas.setAttribute('aria-label', paused
+      ? '咏雪诗境已暂停。使用继续或起风按钮观看。'
+      : '咏雪诗境。拖动观看，轻划起风，也可使用下方起风按钮。');
+  }
   setAudio(enabled: boolean): void { this.sound.querySelector('span')!.textContent = enabled ? '开' : '关'; this.sound.setAttribute('aria-pressed', String(enabled)); }
   setContextLost(lost: boolean): void {
     this.root.dataset.context = lost ? 'lost' : 'ready';
