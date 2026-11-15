@@ -32,8 +32,6 @@ const VERTEX_SHADER = /* glsl */ `
     gl_PointSize = clamp(projectedSize, uPixelRatio, 18.0 * uPixelRatio);
     vOpacity = smoothstep(0.02, 0.42, p.y) * smoothstep(0.35, 1.25, -mvPosition.z)
       * min(1.0, projectedSize / max(1.0, uPixelRatio));
-    // The gallery roof shelters the indoor gathering from falling snow.
-    if (p.x > -9.1 && p.x < -4.8 && p.z > -7.1 && p.z < 0.65 && p.y < 3.4) vOpacity = 0.0;
     vPhase = aPhase;
     vNear = 1.0 - smoothstep(0.8, 4.2, -mvPosition.z);
     #include <fog_vertex>
@@ -107,7 +105,7 @@ export class SnowParticles {
     this.points.renderOrder = 4;
     this.points.onBeforeRender = (renderer) => {
       renderer.getDrawingBufferSize(this.drawingBufferSize);
-      const height = Math.max(1, this.drawingBufferSize.y);
+      const height = Math.max(1, renderer.getRenderTarget()?.height ?? this.drawingBufferSize.y);
       const cssHeight = Math.max(1, renderer.domElement.clientHeight || height);
       // Point sizes are drawing-buffer pixels; keep their world/CSS size stable
       // when DPR, quality, the canvas dimensions or camera FOV changes.

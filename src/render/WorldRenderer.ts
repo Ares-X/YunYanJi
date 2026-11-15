@@ -6,22 +6,26 @@ import {
 import type { WebGLCubeRenderTarget } from 'three';
 import type { EnvironmentSnapshot, QualityLevel } from '../core/types';
 import type { PoemScene } from '../scenes/types';
-import { createProceduralSky } from './ProceduralSky';
+import { createWinterAtmosphere, WINTER_SUN_DIRECTION } from './WinterAtmosphere';
 import { GroundContactShadows } from './GroundContactShadows';
+import { WinterPostProcessing } from './WinterPostProcessing';
 import { drawingSize, QUALITY } from './quality';
 
 export class WorldRenderer {
   readonly renderer: WebGLRenderer;
   readonly scene = new Scene();
-  readonly camera = new PerspectiveCamera(40, 1, 0.2, 220);
-  private readonly sky = createProceduralSky();
-  private readonly sun = new DirectionalLight('#ffe5c3', 1.35);
+  readonly camera = new PerspectiveCamera(49, 1, 0.12, 430);
+  private readonly sky = createWinterAtmosphere();
+  private readonly sun = new DirectionalLight('#f7f5ed', 1.85);
   private readonly contacts = new GroundContactShadows();
+  private readonly post: WinterPostProcessing;
   private environment: WebGLCubeRenderTarget | undefined;
   private quality: QualityLevel;
   private readonly offset = new Vector2();
   private readonly goal = new Vector2();
   private readonly lookAt = new Vector3();
+  private frameFence: WebGLSync | null = null;
+  private deferredFrames = 0;
   private width = 1;
   private height = 1;
 
@@ -30,25 +34,28 @@ export class WorldRenderer {
     this.renderer = new WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance', alpha: false });
     this.renderer.outputColorSpace = SRGBColorSpace;
     this.renderer.toneMapping = ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.08;
+    this.renderer.toneMappingExposure = 0.94;
     // Count nested reflection passes as part of the complete visible frame.
     this.renderer.info.autoReset = false;
     this.renderer.shadowMap.type = PCFShadowMap;
-    this.scene.background = new Color('#c6d1d4');
-    this.scene.fog = new FogExp2('#c6d1d4', 0.018);
-    this.scene.environmentIntensity = 0.78;
-    this.scene.add(new HemisphereLight('#d1e4f1', '#6b7779', 0.35));
-    this.sun.position.set(-7, 11, 4);
-    this.sun.target.position.set(-1, 0, -3);
-    Object.assign(this.sun.shadow.camera, { left: -13, right: 13, top: 13, bottom: -13, near: 0.5, far: 48 });
-    this.sun.shadow.bias = -0.00025;
-    this.sun.shadow.normalBias = 0.018;
-    this.sun.shadow.radius = 4.5;
-    this.sun.shadow.intensity = 0.82;
+    this.renderer.shadowMap.autoUpdate = false;
+    this.scene.background = new Color('#9eafb8');
+    this.scene.fog = new FogExp2('#9eafb8', 0.0095);
+    this.scene.environmentIntensity = 0.52;
+    this.scene.add(new HemisphereLight('#dce8ef', '#b7bbb2', 0.08));
+    // Keep the shadow volume over the visible foreground as well as the grove.
+    this.sun.target.position.set(-1, 0, -8);
+    this.sun.position.copy(this.sun.target.position).addScaledVector(WINTER_SUN_DIRECTION, 82);
+    Object.assign(this.sun.shadow.camera, { left: -34, right: 34, top: 34, bottom: -34, near: 0.5, far: 142 });
+    this.sun.shadow.bias = -0.00008;
+    this.sun.shadow.normalBias = 0.035;
+    this.sun.shadow.radius = 2.0;
+    this.sun.shadow.intensity = 0.90;
     this.scene.add(this.sun, this.sun.target, poem.group);
     this.camera.position.copy(poem.cameraPosition);
     this.lookAt.copy(poem.cameraTarget);
     this.camera.lookAt(this.lookAt);
+    this.post = new WinterPostProcessing(this.renderer, this.scene, this.camera, quality);
     this.rebuildEnvironment();
     this.setQuality(quality);
   }
@@ -60,12 +67,16 @@ export class WorldRenderer {
     skyScene.add(this.sky.mesh);
     const generator = new PMREMGenerator(this.renderer);
     this.environment?.dispose();
-    this.environment = generator.fromScene(skyScene, 0.08, 0.1, 240, { size: 256 });
+    this.sky.setEnvironmentCapture(true);
+    try { this.environment = generator.fromScene(skyScene, 0.08, 0.1, 1000, { size: 256 }); }
+    finally { this.sky.setEnvironmentCapture(false); }
     this.scene.environment = this.environment.texture;
     generator.dispose();
     this.scene.add(this.sky.mesh);
     this.poem.invalidateRenderCaches?.();
     this.contacts.bake(this.renderer, this.scene);
+    this.post.invalidate();
+    this.renderer.shadowMap.needsUpdate = true;
   }
 
   resize(width: number, height: number, dpr = window.devicePixelRatio): void {
@@ -73,9 +84,10 @@ export class WorldRenderer {
     this.height = Math.max(1, height);
     const size = drawingSize(this.width, this.height, dpr, this.quality);
     this.renderer.setSize(size.width, size.height, false);
+    this.post.setSize(size.width, size.height);
     this.camera.aspect = this.width / this.height;
     // Narrow screens can use an individual scene's authored portrait composition.
-    this.camera.fov = this.camera.aspect < 0.8 ? 55 : 40;
+    this.camera.fov = this.camera.aspect < 0.8 ? 54 : 49;
     this.camera.updateProjectionMatrix();
   }
 
@@ -91,6 +103,7 @@ export class WorldRenderer {
     }
     this.renderer.shadowMap.needsUpdate = true;
     this.poem.setQuality(quality);
+    this.post.setQuality(quality);
     this.resize(this.width, this.height);
   }
 
@@ -102,33 +115,64 @@ export class WorldRenderer {
 
   resetView(): void { this.goal.set(0, 0); this.offset.set(0, 0); }
 
-  render(frame: EnvironmentSnapshot): void {
+  /** Context-owned sync objects are invalidated by WebGL itself on loss. */
+  forgetPendingFrame(): void { this.frameFence = null; }
+
+  /**
+   * Submit at most one GPU frame at a time. Polling never blocks the UI thread;
+   * on a slow renderer the next RAF uses the newest simulation/camera state.
+   */
+  render(frame: EnvironmentSnapshot): boolean {
     const ease = frame.reducedMotion ? 1 : 1 - Math.exp(-Math.max(frame.delta, 0.016) * 4);
     this.offset.lerp(this.goal, ease);
     const portrait = this.camera.aspect < 0.8;
     this.camera.position.copy(portrait ? this.poem.portraitCameraPosition ?? this.poem.cameraPosition : this.poem.cameraPosition);
-    this.camera.position.x += this.offset.x * 1.3;
-    this.camera.position.y += this.offset.y * 0.45;
+    this.camera.position.x += this.offset.x * 0.55;
+    this.camera.position.y += this.offset.y * 0.18;
     this.lookAt.copy(portrait ? this.poem.portraitCameraTarget ?? this.poem.cameraTarget : this.poem.cameraTarget);
+    this.lookAt.x += this.offset.x * 13;
+    this.lookAt.y += this.offset.y * 7;
     this.camera.lookAt(this.lookAt);
     this.sky.update(frame.elapsed);
     this.poem.update(frame);
+    const gl = this.renderer.getContext() as WebGL2RenderingContext;
+    if (gl.isContextLost()) return false;
+    if (this.frameFence) {
+      const status = gl.clientWaitSync(this.frameFence, 0, 0);
+      if (status === gl.TIMEOUT_EXPIRED) {
+        this.deferredFrames += 1;
+        return false;
+      }
+      // WAIT_FAILED must not leave rendering permanently locked. A context
+      // loss is handled separately; otherwise discard this fence and retry.
+      gl.deleteSync(this.frameFence);
+      this.frameFence = null;
+    }
     this.renderer.info.reset();
-    this.renderer.render(this.scene, this.camera);
+    this.post.render();
+    this.frameFence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+    gl.flush();
+    return true;
   }
 
   diagnostics() {
     return { quality: this.quality, viewX: this.goal.x, viewY: this.goal.y, calls: this.renderer.info.render.calls, triangles: this.renderer.info.render.triangles,
       geometries: this.renderer.info.memory.geometries, textures: this.renderer.info.memory.textures,
       contactBakes: this.contacts.bakes, contactResolution: this.contacts.resolution,
-      drawingWidth: this.canvas.width, drawingHeight: this.canvas.height, ...this.poem.diagnostics?.() };
+      deferredFrames: this.deferredFrames,
+      drawingWidth: this.canvas.width, drawingHeight: this.canvas.height,
+      ...this.post.diagnostics(), ...this.poem.diagnostics?.() };
   }
 
   dispose(): void {
+    const gl = this.renderer.getContext() as WebGL2RenderingContext;
+    if (this.frameFence && !gl.isContextLost()) gl.deleteSync(this.frameFence);
+    this.frameFence = null;
     this.poem.dispose();
     this.sky.dispose();
     this.environment?.dispose();
     this.contacts.dispose();
+    this.post.dispose();
     this.sun.shadow.map?.dispose();
     this.sun.dispose();
     this.scene.clear();

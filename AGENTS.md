@@ -7,7 +7,8 @@
 - Geometry, analytical shaders, seeded noise, runtime-generated CanvasTexture/DataTexture/render targets, procedural environment maps and generated Web Audio PCM are allowed. GPU textures are runtime data, not authored assets. Generate/cache them once where possible; do not regenerate them per frame.
 - Use system fonts and native DOM/CSS for UI. No third-party fonts or remote runtime asset dependencies.
 - Preserve the original poem's imagery, season and context. The first scene depicts SNOW compared to willow catkins, not literal spring catkins in winter.
-- The planned collection has four themes: wind, flowers, snow, and moon, initially three distinct scenes per theme. Current priority is to polish the first snow courtyard before expanding the playable catalogue. See docs/art-direction.md for candidate scenes and visual acceptance criteria.
+- The planned collection has four themes: wind, flowers, snow, and moon, initially three distinct scenes per theme. Current priority is the first snow forest and stream scene (`createSnowWorld`), viewed at human eye height, before expanding the playable catalogue. See docs/art-direction.md for candidate scenes and visual acceptance criteria.
+- The user explicitly rejected the former miniature courtyard as toy-like. The active scene has been rebuilt around continuous snow terrain, layered forest, rocks, a stream and a fallen trunk. The new scene still requires the user's visual acceptance; do not treat the rejected courtyard or automated checks as the quality target.
 - State clearly whether a scene is a technical foundation or has passed human visual/audio acceptance. Never claim photorealism based on a build passing.
 
 ## Architecture
@@ -20,6 +21,9 @@
 - `src/ui/`: accessible DOM shell and controls; keep implementation terminology out of the default visitor UI.
 - Share weather state between visual motion and audio. Keep all time progression independent of frame count.
 - Seed every generated scene. Use stable namespace seeds so adding audio randomness does not change the landscape.
+- Runtime-generated needle coverage in `forestNeedles.ts` is allowed: its pixels are algorithmically rasterised, cached by seed and released with their material references. Preserve the required UV channel when batching these meshes. Do not replace this generator with authored image data.
+- Keep a consistent linear HDR and output-conversion path across quality levels. Medium/high GTAO reuses the main depth texture at half linear resolution; low disables AO and MSAA. Do not add depth-of-field, bloom or heavy fog to conceal geometry problems.
+- The current terrain and trees are static. Directional shadows are cached and invalidated on initial rendering, quality setup and context restoration. If geometry or lighting starts moving, update that invalidation policy. Stream reflections use simulation time, with an 8 Hz limit only for an unchanged view; camera or scene-cache changes may require an earlier capture.
 - Dispose GPU/audio resources, event listeners and observers. Handle pause, tab visibility, resize and WebGL context loss.
 - Prefer a small working module over speculative frameworks. A new poem should reuse the engine and provide a scene module.
 

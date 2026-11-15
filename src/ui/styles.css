@@ -9,3 +9,21 @@ dialog{width:min(460px,calc(100vw - 40px));max-height:calc(100dvh - 60px);paddin
 @media(max-height:480px) and (orientation:landscape){.masthead{top:17px}.brand h1{font-size:23px}.brand>span{display:none}.verse{top:24%;right:var(--edge)}.verse p{font-size:18px}.verse>span{font-size:8px}.scene-footer{bottom:16px}#hint{display:none}.scene-caption p{margin:0}}
 dialog .notice{position:static;transform:none;max-width:100%;margin-top:15px;font-size:12px}dialog .notice.visible{transform:none}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{transition:none!important}}
+.brand, nav, .verse {
+  color: #f5f3eb;
+  text-shadow: 0 1px 5px #13272bcc, 0 0 18px #13272b55;
+}
+.brand > span, #sound span, .verse > span { color: #e5e9e2; }
+.brand h1 { text-shadow: 0 1px 5px #13272bcc, 0 0 18px #13272b55; }
+nav button:hover { background: rgba(255,255,255,.12); }
+.vignette {
+  background: linear-gradient(180deg,rgba(12,24,29,.20),transparent 23%,transparent 72%,rgba(14,28,34,.28));
+}
+.brand, .verse, .scene-footer, nav button { transition: opacity .35s; }
+.immersive .brand, .immersive .verse, .immersive .scene-footer, .immersive nav button:not(#immerse) {
+  opacity: 0;
+  pointer-events: none;
+}
+.immersive .vignette { opacity: 0; }
+.immersive #immerse { opacity: .65; }
+.immersive #immerse:hover, .immersive #immerse:focus-visible { opacity: 1; }

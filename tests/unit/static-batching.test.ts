@@ -1,8 +1,26 @@
-import { BoxGeometry, Group, Mesh, MeshStandardMaterial } from 'three';
+import { BoxGeometry, Group, Mesh, MeshStandardMaterial, Texture } from 'three';
 import { describe, expect, it, vi } from 'vitest';
 import { mergeStaticMeshes } from '../../src/scenes/snow/mergeStaticMeshes';
 
 describe('static scene batching', () => {
+  it('retains UV coverage when a material uses a runtime-generated map', () => {
+    const root = new Group();
+    const texture = new Texture();
+    const material = new MeshStandardMaterial({ map: texture, alphaTest: 0.45 });
+    const left = new Mesh(new BoxGeometry(), material);
+    const right = new Mesh(new BoxGeometry(), material);
+    right.position.x = 2;
+    const originalUv = Array.from(left.geometry.getAttribute('uv').array);
+    root.add(left, right);
+    mergeStaticMeshes(root, new Set());
+    const combined = root.children[0] as Mesh;
+    expect(Array.from(combined.geometry.getAttribute('uv').array)).toEqual([...originalUv, ...originalUv]);
+    expect(combined.geometry.getAttribute('uv').count).toBe(combined.geometry.getAttribute('position').count);
+    combined.geometry.dispose();
+    material.dispose();
+    texture.dispose();
+  });
+
   it('leaves hidden and excluded subtrees intact while merging visible geometry', () => {
     const root = new Group();
     const material = new MeshStandardMaterial();

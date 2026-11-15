@@ -5,7 +5,7 @@ async function state(page: Page) {
   return page.evaluate(() => window.__YUNYANJI__!.getState());
 }
 
-test('renders the courtyard and supports motion, audio and poem interaction', async ({ page }, testInfo) => {
+test('renders the winter world and supports motion, audio and poem interaction', async ({ page }, testInfo) => {
   const errors: string[] = [];
   const requests: { url: string; type: string }[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
@@ -25,8 +25,8 @@ test('renders the courtyard and supports motion, audio and poem interaction', as
   expect(Number(initial.reflectionUpdates)).toBeGreaterThan(0);
   // Capture the frozen first frame before animation can queue software GPU work.
   // Pixel readback on software-only CI has a different budget from UI actions.
-  await page.screenshot({ path: testInfo.outputPath('courtyard.png'), timeout: 45_000, animations: 'disabled', scale: 'css' });
-  await testInfo.attach('courtyard', { path: testInfo.outputPath('courtyard.png'), contentType: 'image/png' });
+  await page.screenshot({ path: testInfo.outputPath('winter-world.png'), timeout: 45_000, animations: 'disabled', scale: 'css' });
+  await testInfo.attach('winter-world', { path: testInfo.outputPath('winter-world.png'), contentType: 'image/png' });
   expect((await state(page)).reflectionUpdates).toBe(initial.reflectionUpdates);
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
   expect(overflow).toBe(false);
@@ -40,6 +40,12 @@ test('renders the courtyard and supports motion, audio and poem interaction', as
     expect(box!.x + box!.width).toBeLessThanOrEqual(viewport.width);
     expect(box!.y + box!.height).toBeLessThanOrEqual(viewport.height);
   }
+
+  await page.getByRole('button', { name: '入境', exact: true }).click();
+  await expect(page.locator('#app')).toHaveClass(/immersive/);
+  await expect(page.locator('.scene-footer')).toHaveAttribute('inert', '');
+  await page.getByRole('button', { name: '显字', exact: true }).click();
+  await expect(page.locator('#app')).not.toHaveClass(/immersive/);
 
   await page.emulateMedia({ reducedMotion: 'no-preference' });
   await page.getByRole('button', { name: '起风', exact: true }).click();
@@ -111,6 +117,7 @@ test('previews settings, updates procedural rendering and releases resources', a
     .toBeGreaterThan(Number(beforeQuality.reflectionUpdates));
   const afterQuality = await state(page);
   expect(afterQuality.quality).toBe('low');
+  expect(afterQuality.ambientOcclusion).toBe(false);
   expect(afterQuality.geometries).toBe(beforeQuality.geometries);
   expect(afterQuality.contactBakes).toBe(beforeQuality.contactBakes);
   expect(afterQuality.reflectionSize).toBe(256);
@@ -119,6 +126,17 @@ test('previews settings, updates procedural rendering and releases resources', a
   // redundant WebGL redraws on a software-only runner.
   for (let i = 0; i < 2; i++) await page.getByLabel('雪量', { exact: true }).press('ArrowRight');
   expect((await state(page)).snow).toBe(0.02);
+  // Re-enabling MSAA/AO must recreate attachments without losing the generated
+  // needle coverage or leaving the reflection at its low-resolution target.
+  const beforeHigh = await state(page);
+  await page.getByRole('combobox', { name: '画质', exact: true }).selectOption('high');
+  await expect.poll(async () => Number((await state(page)).reflectionUpdates))
+    .toBeGreaterThan(Number(beforeHigh.reflectionUpdates));
+  const highAgain = await state(page);
+  expect(highAgain.quality).toBe('high');
+  expect(highAgain.ambientOcclusion).toBe(true);
+  expect(highAgain.reflectionSize).toBe(512);
+  expect(highAgain.geometries).toBe(beforeQuality.geometries);
   await page.screenshot({ path: testInfo.outputPath('settings.png'), timeout: 45_000, animations: 'disabled', scale: 'css' });
   await testInfo.attach('settings', { path: testInfo.outputPath('settings.png'), contentType: 'image/png' });
   await page.getByRole('button', { name: '重看此境' }).click();
@@ -177,7 +195,7 @@ test('starts still for reduced motion and recovers from WebGL context loss', asy
   const restored = await page.screenshot({ path: testInfo.outputPath('restored.png'), timeout: 45_000, animations: 'disabled', scale: 'css' });
   await testInfo.attach('restored', { path: testInfo.outputPath('restored.png'), contentType: 'image/png' });
   // Compare runtime captures of the same frozen scene. The central region omits
-  // the recovery notification but includes the courtyard's indirect lighting.
+  // the recovery notification but includes the forest's indirect lighting.
   const difference = await page.evaluate(async ({ beforePng, restoredPng }) => {
     const decode = async (encoded: string) => {
       const bytes = Uint8Array.from(atob(encoded), (character) => character.charCodeAt(0));

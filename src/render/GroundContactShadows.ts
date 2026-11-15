@@ -93,9 +93,15 @@ export class GroundContactShadows {
     const hidden: Object3D[] = [];
     const materials = new Set<Material>();
     scene.traverse((object) => {
+      let cutout = false;
       if (object instanceof Mesh) {
         const entries = Array.isArray(object.material) ? object.material : [object.material];
         entries.forEach((material) => materials.add(material));
+        // This inexpensive override pass has no UV/alpha sampling. Foliage
+        // retains its correctly clipped directional shadow and screen-space AO.
+        cutout = entries.some((material) => material.alphaTest > 0
+          && (('map' in material && Boolean(material.map))
+            || ('alphaMap' in material && Boolean(material.alphaMap))));
         // This is a field projected onto the ground, not general-purpose AO.
         // Letting a caster sample its own underside darkens a step's snow cap.
         // Static batches already preserve cast/receive flags, so one constant
@@ -112,7 +118,7 @@ export class GroundContactShadows {
         }
       }
       // The ground cannot occlude itself; particles and the sky are not casters.
-      if (object.visible && ('isPoints' in object || (object instanceof Mesh && !object.castShadow))) {
+      if (object.visible && ('isPoints' in object || (object instanceof Mesh && (!object.castShadow || cutout)))) {
         hidden.push(object);
         object.visible = false;
       }

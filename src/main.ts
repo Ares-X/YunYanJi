@@ -36,7 +36,8 @@ async function start(): Promise<() => void> {
   const audioSuspended = () => manualPause || activeDialog === 'poem' || document.hidden || contextLost || disposed;
 
   const renderStill = () => {
-    if (world && prepared && !contextLost && !disposed) world.render(weather.snapshot());
+    return world && prepared && !contextLost && !disposed
+      ? world.render(weather.snapshot()) : true;
   };
 
   // A settings/resize event should update state immediately without compiling a
@@ -44,7 +45,10 @@ async function start(): Promise<() => void> {
   // next frame; the active animation loop already covers an unpaused scene.
   const scheduleStill = () => {
     if (!prepared || contextLost || disposed || stillRaf || (!suspended() && raf)) return;
-    stillRaf = requestAnimationFrame(() => { stillRaf = 0; renderStill(); });
+    stillRaf = requestAnimationFrame(() => {
+      stillRaf = 0;
+      if (!renderStill()) scheduleStill();
+    });
   };
 
   const frame = (now: number) => {
@@ -54,9 +58,10 @@ async function start(): Promise<() => void> {
     lastTime = now;
     const snapshot = weather.advance(delta);
     const begin = performance.now();
-    world?.render(snapshot);
-    lastFrameMs = performance.now() - begin;
-    frameCount += 1;
+    if (world?.render(snapshot)) {
+      lastFrameMs = performance.now() - begin;
+      frameCount += 1;
+    }
     audio.update(snapshot);
     raf = requestAnimationFrame(frame);
   };
@@ -70,7 +75,7 @@ async function start(): Promise<() => void> {
     void audio.setSuspended(audioSuspended()).catch(() => ui.notify('声音暂时中断，可重新开启。'));
     ui.setPaused(manualPause);
     if (!suspended() && world && prepared) raf = requestAnimationFrame(frame);
-    else renderStill();
+    else scheduleStill();
   };
 
   const triggerGust = (direction = 1, strength = 1) => {
@@ -89,7 +94,7 @@ async function start(): Promise<() => void> {
       try {
         await audio.setEnabled(!audio.enabled);
         ui.setAudio(audio.enabled);
-        if (audio.enabled) ui.notify('听风经过庭院。');
+        if (audio.enabled) ui.notify('听风穿过雪林。');
       } catch (error) {
         ui.setAudio(false);
         throw error;
@@ -98,7 +103,7 @@ async function start(): Promise<() => void> {
     setVolume: (value) => audio.setVolume(value),
     setSnow: (value) => { weather.setSnowIntensity(value); scheduleStill(); },
     setQuality: (value) => { quality = value; resize(); },
-    reset: () => { weather.reset(); world?.resetView(); renderStill(); ui.notify('回到初见时。'); },
+    reset: () => { weather.reset(); world?.resetView(); scheduleStill(); ui.notify('回到初见时。'); },
     share: async () => {
       const link = sceneLink(window.location.href, seed);
       window.history.replaceState(null, '', link);
@@ -161,6 +166,7 @@ async function start(): Promise<() => void> {
     event.preventDefault();
     contextLost = true;
     prepared = false;
+    world?.forgetPendingFrame();
     down = undefined;
     ui.setContextLost(true);
     syncPlayback();
@@ -182,6 +188,7 @@ async function start(): Promise<() => void> {
         prepared = true;
         contextLost = false;
         resize();
+        renderStill();
         ui.setContextLost(false);
         syncPlayback();
       } catch {
@@ -227,7 +234,7 @@ async function start(): Promise<() => void> {
     resize();
     await world.prepare();
     prepared = true;
-    if (!disposed) { ui.ready(); syncPlayback(); }
+    if (!disposed) { renderStill(); ui.ready(); syncPlayback(); }
   } catch (error) {
     console.error('Unable to create YunYanJi landscape', error);
     if (!world) scene?.dispose();

@@ -33,6 +33,7 @@ export class Shell {
           <button id="sound" aria-pressed="false">声音 <span>关</span></button>
           <button id="read" aria-haspopup="dialog">诗文</button>
           <button id="settings" aria-haspopup="dialog">设置</button>
+          <button id="immerse" aria-pressed="false" title="隐藏文字，专注风景">入境</button>
         </nav>
       </header>
       <aside class="verse" aria-label="诗句"><p id="excerpt"></p><span id="source"></span></aside>
@@ -52,7 +53,7 @@ export class Shell {
         <label class="setting-row" for="quality"><span>画质</span><select id="quality"><option value="auto">自动</option><option value="high">细腻</option><option value="medium">均衡</option><option value="low">轻盈</option></select></label>
         <label class="setting-row" for="volume"><span>声音</span><input id="volume" type="range" min="0" max="1" step="0.01" value="0.45" aria-label="声音音量" /></label>
         <label class="setting-row" for="snow"><span>雪量</span><input id="snow" type="range" min="0" max="1" step="0.01" value="0.72" aria-label="雪量" /></label>
-        <p class="settings-note">开启声音，听风经过庭院。</p>
+        <p class="settings-note">开启声音，听风穿过雪林。</p>
         <div class="settings-actions"><button id="reset">重看此境</button><button id="share">分享此境</button></div>
         <p class="quiet-line">在诗里的风景中，停留片刻。</p>
       </dialog>`;
@@ -74,6 +75,18 @@ export class Shell {
     const on = (element: Element, event: string, listener: EventListener) => element.addEventListener(event, listener, { signal: this.abort.signal });
     on(get('#gust'), 'click', () => actions.gust());
     on(this.pause, 'click', actions.togglePause);
+    on(get('#immerse'), 'click', () => {
+      const immersive = root.classList.toggle('immersive');
+      const toggle = get<HTMLButtonElement>('#immerse');
+      toggle.textContent = immersive ? '显字' : '入境';
+      toggle.setAttribute('aria-pressed', String(immersive));
+      toggle.title = immersive ? '显示诗句与工具' : '隐藏文字，专注风景';
+      for (const element of root.querySelectorAll<HTMLElement>('.brand, .verse, .scene-footer, nav button:not(#immerse)')) {
+        element.inert = immersive;
+        if (immersive) element.setAttribute('aria-hidden', 'true');
+        else element.removeAttribute('aria-hidden');
+      }
+    });
     on(this.sound, 'click', () => {
       this.sound.disabled = true;
       void actions.toggleAudio().catch(() => this.notify('声音暂时无法开启，请再试一次。')).finally(() => { this.sound.disabled = false; });

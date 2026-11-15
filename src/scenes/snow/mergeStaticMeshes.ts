@@ -45,10 +45,12 @@ export function mergeStaticMeshes(root: Group, excluded: ReadonlySet<Object3D>):
     const parts: BufferGeometry[] = [];
     for (const original of meshes) {
       const part = original.geometry.clone();
-      // All surfaces use analytical world-space detail, so UV/tangent channels
-      // are unnecessary. Keeping indices avoids expanding every triangle.
+      // Analytic surfaces need no UVs. Runtime-generated needle coverage uses a
+      // real UV channel; stripping it would turn the cutout canopy into sheets.
+      const usesUv = ['map', 'alphaMap', 'normalMap', 'roughnessMap'].some((name) =>
+        name in material && Boolean((material as unknown as Record<string, unknown>)[name]));
       for (const attribute of Object.keys(part.attributes)) {
-        if (attribute !== 'position' && attribute !== 'normal') part.deleteAttribute(attribute);
+        if (attribute !== 'position' && attribute !== 'normal' && !(usesUv && attribute === 'uv')) part.deleteAttribute(attribute);
       }
       if (!part.getAttribute('normal')) part.computeVertexNormals();
       if (!part.index) part.setIndex(Array.from({ length: part.getAttribute('position').count }, (_, index) => index));

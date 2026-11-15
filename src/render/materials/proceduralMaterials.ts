@@ -22,9 +22,9 @@ export function setContactShadowField(material: Material, texture: Texture, boun
 
 const PALETTES: Record<ProceduralMaterialKind, { color: number; roughness: number }> = {
   snow: { color: 0xf1f3ef, roughness: 0.93 },
-  stone: { color: 0x777c78, roughness: 0.87 },
+  stone: { color: 0x76756d, roughness: 0.87 },
   wood: { color: 0x514337, roughness: 0.84 },
-  bark: { color: 0x514d43, roughness: 0.96 },
+  bark: { color: 0x6b6253, roughness: 0.96 },
   plaster: { color: 0xdadcd5, roughness: 0.97 },
   tile: { color: 0x3e4a4c, roughness: 0.86 },
 };
@@ -76,22 +76,30 @@ const SURFACES: Record<ProceduralMaterialKind, string> = {
     float yyjWindWarp = yyjNoise(yyjP * vec3(2.8, 0.5, 1.1));
     float yyjRidgePhase = dot(yyjP.xz, vec2(10.0, 4.5)) + yyjDrifts * 6.0 + yyjWindWarp * 0.9;
     float yyjRidges = pow(0.5 + 0.5 * sin(yyjRidgePhase), 3.0);
+    float yyjCrust = mix(0.5, yyjNoise(yyjP * 26.0 + yyjWindWarp * 2.0), yyjDetailFade);
     float yyjFine = mix(0.5, yyjNoise(yyjP * 130.0), yyjMicroFade);
     float yyjCrystals = smoothstep(0.76, 0.91, yyjFine);
-    diffuseColor.rgb *= 0.98 + yyjDrifts * 0.035 + yyjRidges * 0.008 + (yyjFine - 0.5) * 0.018;
-    yyjHeight = (yyjDrifts - 0.5) * 0.018 + (yyjRidges - 0.35) * 0.0045 + (yyjFine - 0.5) * 0.00065;
-    yyjRoughness = (yyjDrifts - 0.5) * 0.045 - yyjCrystals * 0.12;
+    diffuseColor.rgb *= 0.96 + yyjDrifts * 0.06 + yyjRidges * 0.008
+      + (yyjCrust - 0.5) * 0.018 + (yyjFine - 0.5) * 0.018;
+    yyjHeight = (yyjDrifts - 0.5) * 0.038 + (yyjRidges - 0.35) * 0.006
+      + (yyjCrust - 0.5) * 0.0024 + (yyjFine - 0.5) * 0.00065;
+    yyjRoughness = (yyjDrifts - 0.5) * 0.07 + (yyjCrust - 0.5) * 0.08 - yyjCrystals * 0.12;
   `,
   stone: /* glsl */ `
-    float yyjMottle = yyjFbm(yyjP * vec3(1.8, 2.6, 1.8));
-    float yyjStrataWarp = yyjNoise(yyjP * 0.7);
-    float yyjStrata = sin(yyjP.y * 8.0 + yyjP.x * 0.6 + yyjStrataWarp * 4.0);
-    float yyjFine = mix(0.5, yyjNoise(yyjP * 29.0), yyjDetailFade);
-    float yyjDamp = 1.0 - smoothstep(0.10, 0.42 + yyjMottle * 0.16, vYyjWorldPosition.y);
-    diffuseColor.rgb *= 0.89 + yyjMottle * 0.28 + (yyjFine - 0.5) * 0.09 + yyjStrata * 0.028;
-    diffuseColor.rgb *= mix(vec3(1.0), vec3(0.78, 0.83, 0.81), yyjDamp);
-    yyjHeight = (yyjMottle - 0.5) * 0.011 + yyjStrata * 0.0016 + (yyjFine - 0.5) * 0.002;
-    yyjRoughness = (yyjFine - 0.5) * 0.09 - yyjDamp * 0.24;
+    float yyjMottle = yyjFbm(yyjP * vec3(2.2, 3.1, 2.6));
+    float yyjWarp = yyjNoise(yyjP * 0.85);
+    float yyjStrata = yyjNoise(yyjP * vec3(3.5, 14.0, 3.2) + yyjWarp * 2.1);
+    float yyjFine = mix(0.5, yyjNoise(yyjP * 67.0), yyjDetailFade);
+    float yyjQuartz = smoothstep(0.63, 0.76, yyjNoise(yyjP * 12.5 + yyjMottle * 2.0));
+    float yyjFracture = (1.0 - smoothstep(0.012, 0.065, abs(yyjStrata - 0.43)))
+      * smoothstep(0.24, 0.65, yyjMottle) * yyjDetailFade;
+    float yyjDamp = 1.0 - smoothstep(-0.31, 0.12 + yyjMottle * 0.12, vYyjWorldPosition.y);
+    diffuseColor.rgb *= 0.62 + yyjMottle * 0.60 + yyjQuartz * 0.15
+      + (yyjFine - 0.5) * 0.19 - yyjFracture * 0.15;
+    diffuseColor.rgb *= mix(vec3(1.0), vec3(0.55, 0.59, 0.57), yyjDamp);
+    yyjHeight = (yyjMottle - 0.5) * 0.026 + (yyjStrata - 0.5) * 0.004
+      + (yyjFine - 0.5) * 0.0025 - yyjFracture * 0.003;
+    yyjRoughness = (yyjFine - 0.5) * 0.12 - yyjDamp * 0.37;
   `,
   wood: /* glsl */ `
     // Architectural timber has restrained patina. Strong trunk-like grooves on
@@ -104,12 +112,16 @@ const SURFACES: Record<ProceduralMaterialKind, string> = {
   `,
   bark: /* glsl */ `
     float yyjWeather = yyjFbm(yyjP * vec3(2.7, 0.6, 2.7));
-    float yyjGrain = yyjNoise(yyjP * vec3(30.0, 1.6, 30.0) + vec3(yyjWeather * 1.3, 0.0, yyjWeather * 0.7));
-    float yyjPlates = yyjNoise(yyjP * vec3(8.0, 2.1, 8.0));
-    float yyjFissures = smoothstep(0.57, 0.78, yyjGrain) * yyjDetailFade;
-    diffuseColor.rgb *= 0.85 + yyjWeather * 0.26 + yyjPlates * 0.08 - yyjFissures * 0.20;
-    yyjHeight = (yyjPlates - 0.5) * 0.004 - yyjFissures * 0.0032 + (yyjWeather - 0.5) * 0.003;
-    yyjRoughness = (yyjWeather - 0.5) * 0.035;
+    float yyjGrain = yyjNoise(yyjP * vec3(23.0, 1.2, 23.0) + vec3(yyjWeather * 1.6, 0.0, yyjWeather * 0.7));
+    float yyjPlates = yyjNoise(yyjP * vec3(8.0, 3.6, 8.0));
+    float yyjFissures = (1.0 - smoothstep(0.035, 0.13, abs(yyjGrain - 0.49))) * yyjDetailFade;
+    float yyjFine = mix(0.5, yyjNoise(yyjP * vec3(82.0, 9.2, 82.0)), yyjDetailFade);
+    float yyjLichen = smoothstep(0.65, 0.77, yyjFbm(yyjP * 5.8 + yyjWeather));
+    diffuseColor.rgb *= 0.68 + yyjWeather * 0.47 + yyjPlates * 0.18 - yyjFissures * 0.32;
+    diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.23, 0.26, 0.20), yyjLichen * 0.33);
+    yyjHeight = (yyjPlates - 0.5) * 0.014 - yyjFissures * 0.008
+      + (yyjWeather - 0.5) * 0.007 + (yyjFine - 0.5) * 0.0014;
+    yyjRoughness = (yyjWeather - 0.5) * 0.065;
   `,
   plaster: /* glsl */ `
     float yyjWash = yyjFbm(yyjP * vec3(0.65, 0.42, 0.65));
@@ -197,7 +209,7 @@ export function createProceduralMaterial(kind: ProceduralMaterialKind, seed: str
         float yyjGround = 1.0 - smoothstep(0.10, 0.85, vYyjWorldPosition.y);
         float yyjContact = texture2D(uYyjContactMap, clamp(yyjContactUv, 0.0, 1.0)).r;
         float yyjAmbient = 1.0 - yyjContact * yyjGround * yyjInside
-          * uYyjContactEnabled * vYyjContactReceiver * 0.72;
+          * uYyjContactEnabled * vYyjContactReceiver * 0.30;
         reflectedLight.indirectDiffuse *= yyjAmbient;
         reflectedLight.indirectSpecular *= yyjAmbient;
       `)
@@ -218,6 +230,6 @@ export function createProceduralMaterial(kind: ProceduralMaterialKind, seed: str
   };
 
   // Each source variation has its own key; no patch depends on mutable globals.
-  material.customProgramCacheKey = () => `yyj-surface-v4/${kind}/${hashSeed(seed)}`;
+  material.customProgramCacheKey = () => `yyj-surface-v6/${kind}/${hashSeed(seed)}`;
   return material;
 }
