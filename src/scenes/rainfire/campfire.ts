@@ -6,6 +6,7 @@ import {
 import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { createRandom, randomBetween } from '../../core/random';
 import type { EnvironmentSnapshot, QualityLevel } from '../../core/types';
+import type { SceneDepthField } from '../../render/SurfaceOcclusion';
 import { createRainMaterial } from './rainMaterials';
 
 const TAU = Math.PI * 2;
@@ -28,11 +29,29 @@ const NOISE = /* glsl */ `
   }
 `;
 
+const CHAR_PLATES = /* glsl */ `
+  // Shrinking charcoal breaks across the grain as well as along it. Distances
+  // to unequal jittered cells give broken plates instead of luminous stripes.
+  vec2 charPlate(vec2 p) {
+    vec2 cell=floor(p), local=fract(p);
+    float first=10.0, second=10.0;
+    for(int y=-1;y<=1;y++) for(int x=-1;x<=1;x++) {
+      vec2 neighbour=vec2(float(x),float(y)), id=cell+neighbour;
+      vec2 centre=.14+.72*vec2(fireHash(vec3(id,3.7)),fireHash(vec3(id,19.3)));
+      vec2 delta=neighbour+centre-local;
+      float distance=dot(delta,delta);
+      if(distance<first){second=first;first=distance;}
+      else second=min(second,distance);
+    }
+    return vec2(sqrt(first),sqrt(second)-sqrt(first));
+  }
+`;
+
 /** Split firewood: curved, chipped rings and separate end-face vertices. */
 function logGeometry(seed: string, length: number, radius: number): BufferGeometry {
   const random = createRandom(seed);
   const phase = random() * TAU, identity = random() * 73;
-  const rows = 12, sectors = 24;
+  const rows = 18, sectors = 28;
   const positions: number[] = [], indices: number[] = [], radii: number[] = [], identities: number[] = [];
   const add = (x: number, y: number, z: number): number => {
     const index = positions.length / 3;
@@ -46,11 +65,13 @@ function logGeometry(seed: string, length: number, radius: number): BufferGeomet
       const angle = sector / sectors * TAU;
       const grain = 1 + 0.054 * Math.sin(angle * 7 + phase)
         + 0.023 * Math.sin(angle * 17 - t * 11 + phase);
-      const r = radius * (1 - t * 0.10) * grain;
+      const r = radius * (1 - t * 0.10) * grain
+        * (1 + .028*Math.sin(t*25+phase)*Math.sin(angle*9+.7));
       const fractured = (Math.sin(angle * 7 + phase) * 0.011 + Math.sin(angle * 13) * 0.006)
         * (Math.exp(-t * 30) + Math.exp(-(1 - t) * 30));
+      const split=radius*(.52+.045*Math.sin(t*14+phase))+.003*Math.sin(angle*9+t*28);
       add((t - 0.5) * length + fractured,
-        Math.min(Math.cos(angle) * r, radius * 0.55) + bend,
+        Math.min(Math.cos(angle) * r, split) + bend,
         Math.sin(angle) * r + Math.sin(t * Math.PI) * radius * 0.08);
     }
   }
@@ -85,7 +106,7 @@ function logGeometry(seed: string, length: number, radius: number): BufferGeomet
 
 function fuelMaterial(time: { value: number }): MeshStandardMaterial {
   const material = new MeshStandardMaterial({
-    color: '#574634', roughness: 0.94, emissive: '#ff510b', emissiveIntensity: 1.6, dithering: true,
+    color: '#574634', roughness: 0.94, emissive: '#ff4607', emissiveIntensity: 2.2, dithering: true,
   });
   material.name = 'generated-charred-split-firewood';
   material.onBeforeCompile = (shader) => {
@@ -104,7 +125,8 @@ function fuelMaterial(time: { value: number }): MeshStandardMaterial {
         varying vec3 vFuelPosition, vFuelNormal;
         varying float vFuelRadius, vFuelIdentity;
         uniform float uFireTime;
-        ${NOISE}`)
+        ${NOISE}
+        ${CHAR_PLATES}`)
       .replace('#include <color_fragment>', /* glsl */ `
         #include <color_fragment>
         vec3 p = vFuelPosition;
@@ -117,16 +139,26 @@ function fuelMaterial(time: { value: number }): MeshStandardMaterial {
         float ring = length(p.yz) * (120.0 + sin(atan(p.z, p.y) * 5.0) * 4.0)
           + fireNoise(p * 29.0 + vFuelIdentity) * 0.30;
         float lateWood = 1.0 - smoothstep(0.03, 0.13, abs(fract(ring) - 0.5));
-        float cracks = (1.0 - smoothstep(0.025, 0.10, abs(grain - 0.48)))
-          * smoothstep(0.38, 0.69, weather);
+        vec2 plateUv=vec2(p.x*23.0,atan(p.z,p.y)*vFuelRadius*35.0);
+        plateUv=mix(plateUv,p.yz*32.0,endFace)+vFuelIdentity;
+        plateUv+=vec2(weather-.5,grain-.5)*.33;
+        vec2 plate=charPlate(plateUv);
+        float cracks=1.0-smoothstep(.018,.085,plate.y);
+        float ash=smoothstep(.57,.76,fireNoise(p*vec3(7.0,27.0,24.0)+vFuelIdentity+7.2))
+          *charred*(.35+.65*max(0.0,vFuelNormal.y));
         diffuseColor.rgb *= 0.47 + weather * 0.45 + exposed * 0.26 - grain * 0.13;
-        diffuseColor.rgb *= mix(1.0, 0.28, charred);
+        diffuseColor.rgb=mix(diffuseColor.rgb,vec3(.006,.0065,.006)*(.74+plate.x*.65),charred);
+        diffuseColor.rgb=mix(diffuseColor.rgb,vec3(.095,.086,.072),ash*.75);
         diffuseColor.rgb *= 1.0 - endFace * lateWood * 0.48;
-        float relief = weather * 0.006 + grain * 0.0018 - cracks * 0.0032;
-        float fuelGlow = cracks * charred * (0.68 + 0.12 * sin(uFireTime * 2.3 + vFuelIdentity));
+        float relief=mix(weather*.0016+grain*.0004,
+          (1.0-plate.x)*.0035-cracks*.0030,charred);
+        float heat=smoothstep(.41,.72,fireNoise(p*vec3(8.0,17.0,17.0)+vFuelIdentity+21.3))
+          *charred*(1.0-ash)*(.35+.65*(1.0-smoothstep(-.025,.065,p.y)));
+        float fuelGlow=(cracks*.60+smoothstep(.76,.93,grain)*.10)*heat
+          *(.82+.10*sin(uFireTime*2.3+vFuelIdentity));
       `)
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
-        totalEmissiveRadiance *= fuelGlow * 0.52;`)
+        totalEmissiveRadiance *= fuelGlow;`)
       .replace('#include <normal_fragment_maps>', /* glsl */ `
         #include <normal_fragment_maps>
         vec3 dx = dFdx(-vViewPosition), dy = dFdy(-vViewPosition);
@@ -138,7 +170,7 @@ function fuelMaterial(time: { value: number }): MeshStandardMaterial {
         }
       `);
   };
-  material.customProgramCacheKey = () => 'rainfire-charred-fuel-v1';
+  material.customProgramCacheKey = () => 'rainfire-charred-fuel-v2';
   return material;
 }
 
@@ -158,15 +190,25 @@ function emberMaterial(time: { value: number }): MeshStandardMaterial {
         #include <color_fragment>
         float cells = fireNoise(vCoalPosition * 49.0);
         float patches = fireNoise(vCoalPosition * 15.0 + 11.7);
-        float fissure = (1.0 - smoothstep(0.018, 0.10, abs(cells - 0.48)))
-          * smoothstep(0.33, 0.68, patches);
-        float heat = 0.018 + fissure * 0.95 + smoothstep(0.69, 0.82, patches) * 0.28;
-        diffuseColor.rgb *= 0.55 + cells * 0.52;
+        float crust=fireNoise(vCoalPosition*93.0+vec3(7.1,18.3,2.7));
+        float fissure=(1.0-smoothstep(.012,.064,abs(cells-.43)))
+          *smoothstep(.40,.70,patches)*(1.0-smoothstep(.47,.72,crust));
+        float exposedHeat=smoothstep(.40,.71,patches)*(.60+.40*cells);
+        float heat=.005+exposedHeat*.25+fissure*.58;
+        float ash=smoothstep(.67,.86,crust)*(1.0-exposedHeat);
+        diffuseColor.rgb=mix(diffuseColor.rgb*(.42+cells*.36),vec3(.07,.063,.052),ash);
       `)
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
-        totalEmissiveRadiance *= heat * (0.85 + 0.13 * sin(uCoalTime * 1.7 + patches * 17.0));`);
+        totalEmissiveRadiance *= heat * (0.85 + 0.13 * sin(uCoalTime * 1.7 + patches * 17.0));`)
+      .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+        float coalRelief=(cells-.5)*.0018+(crust-.5)*.00055-fissure*.001;
+        vec3 coalDx=dFdx(-vViewPosition),coalDy=dFdy(-vViewPosition);
+        vec3 coalCx=cross(coalDy,normal),coalCy=cross(normal,coalDx);
+        float coalDet=dot(coalDx,coalCx);
+        if(abs(coalDet)>1e-8) normal=normalize(abs(coalDet)*normal
+          -sign(coalDet)*(dFdx(coalRelief)*coalCx+dFdy(coalRelief)*coalCy));`);
   };
-  material.customProgramCacheKey = () => 'rainfire-ember-coals-v1';
+  material.customProgramCacheKey = () => 'rainfire-ember-coals-v2';
   return material;
 }
 
@@ -201,9 +243,10 @@ function stoneAndCoalGeometry(seed: string, coals: boolean): BufferGeometry {
   const pieces: BufferGeometry[] = [];
   const count = coals ? 30 : 10;
   for (let i = 0; i < count; i++) {
-    const primitive = new IcosahedronGeometry(1, coals ? 1 : 3);
-    const geometry = coals ? primitive : mergeVertices(primitive, 1e-5);
-    if (!coals) primitive.dispose();
+    const primitive = new IcosahedronGeometry(1, coals ? 2 : 3);
+    primitive.deleteAttribute('normal'); primitive.deleteAttribute('uv');
+    const geometry = mergeVertices(primitive, 1e-5);
+    primitive.dispose();
     const position = geometry.getAttribute('position');
     const phase = random() * TAU;
     const sx = coals ? randomBetween(random, 0.035, 0.095) : randomBetween(random, 0.15, 0.24);
@@ -246,6 +289,10 @@ const volumeFragment = /* glsl */ `
   uniform vec2 uWind;
   uniform vec3 uSeed;
   uniform mat4 uWorldToLocal, uLocalToClip;
+  uniform sampler2D uSceneDepth;
+  uniform vec2 uSceneInverseSize;
+  uniform mat4 uSceneInverseProjection, uSceneCameraWorld;
+  uniform float uSceneDepthEnabled;
   varying vec3 vFirePosition;
   #include <common>
   #include <fog_pars_fragment>
@@ -277,12 +324,22 @@ const volumeFragment = /* glsl */ `
     vec3 ray = normalize(vFirePosition - origin);
     vec2 bounds = intersectFire(origin, ray);
     float begin = max(0.0, bounds.x), end = bounds.y;
+    if (uSceneDepthEnabled > .5) {
+      vec2 sceneUv=gl_FragCoord.xy*uSceneInverseSize;
+      float sceneDepth=texture2D(uSceneDepth,sceneUv).r;
+      vec4 viewHit=uSceneInverseProjection*vec4(sceneUv*2.0-1.0,sceneDepth*2.0-1.0,1.0);
+      viewHit/=viewHit.w;
+      vec3 localHit=(uWorldToLocal*uSceneCameraWorld*viewHit).xyz;
+      // Stop integrating at the actual opaque surface. Merely setting the
+      // first luminous fragment depth still includes emission behind a log.
+      end=min(end,length(localHit-origin)-.003);
+    }
     if (end <= begin) discard;
     float stepLength = (end - begin) / uSteps;
     // Without temporal accumulation, per-pixel random offsets turn thin
     // reaction sheets into sand. Stable midpoints resolve their real shape.
     float distanceAlongRay = begin + stepLength * 0.5;
-    float frontWidth = max(0.196, stepLength * 7.0);
+    float frontWidth = max(0.130, stepLength * 6.0);
     float microDetail = 1.0 - smoothstep(0.025, 0.070, stepLength);
     float transmittance = 1.0;
     vec3 accumulated = vec3(0.0);
@@ -308,19 +365,20 @@ const volumeFragment = /* glsl */ `
       float field = shape + (large - 0.5) * 1.40 + (fine - 0.5) * 0.82 + (micro - 0.5) * 0.44;
       // Luminous reaction fronts form folded, thin sheets. Filling every
       // positive sample instead would turn the fire into smooth orange wax.
-      float reaction = exp(-pow((field - 0.22) / frontWidth, 2.0)) * (0.196 / frontWidth);
+      float reaction = exp(-pow((field - 0.22) / frontWidth, 2.0)) * (0.130 / frontWidth);
       float broken = smoothstep(0.27, 0.59, turbulence + (1.0 - p.y / 1.6) * 0.09);
       float flame = reaction * broken
         * smoothstep(0.19, 0.38, p.y)
         * (1.0 - smoothstep(height + 0.07, height + 0.18, p.y));
       float temperature = clamp(0.36 + fine * 0.53 + (micro - 0.5) * 0.76 - p.y * 0.08, 0.0, 1.0);
-      vec3 flameColor = mix(vec3(1.32, 0.066, 0.0012), vec3(3.24, 0.77, 0.030), smoothstep(0.20, 0.78, temperature));
+      vec3 flameColor = mix(vec3(4.5, 0.28, 0.007), vec3(16.0, 4.8, 0.35), smoothstep(0.20, 0.78, temperature));
       // Heat varies through the folds, so the pale core consists of short
       // irregular filaments instead of one smooth height-based gradient.
       float hotCore = smoothstep(0.74, 0.94, temperature) * reaction
         * (1.0 - smoothstep(0.43, 1.1, p.y));
-      flameColor = mix(flameColor, vec3(3.8, 1.8, 0.32), hotCore);
-      float fireAlpha = 1.0 - exp(-flame * stepLength * 5.1);
+      flameColor = mix(flameColor, vec3(32.0, 18.0, 5.2), hotCore);
+      float fireAlpha = 1.0 - exp(-flame * stepLength * 1.75);
+      float emission = flame * stepLength * 2.2 * (.72 + temperature*.50);
 
       vec2 smokeCentre = uWind * max(0.0, p.y - 0.5) * 0.30;
       float smokeRadius = 0.16 + p.y * 0.08;
@@ -332,8 +390,8 @@ const volumeFragment = /* glsl */ `
       vec3 smokeColor = vec3(0.018, 0.025, 0.029)
         + vec3(0.13, 0.044, 0.012) * exp(-p.y * 1.4);
       float alpha = 1.0 - (1.0 - fireAlpha) * (1.0 - smokeAlpha);
-      vec3 source = flameColor * fireAlpha + smokeColor * smokeAlpha * (1.0 - fireAlpha);
-      if (!foundLight && alpha > 0.003) { firstLight = p; foundLight = true; }
+      vec3 source = flameColor * emission + smokeColor * smokeAlpha * (1.0 - fireAlpha);
+      if (!foundLight && (alpha > 0.003 || emission > .0008)) { firstLight = p; foundLight = true; }
       accumulated += transmittance * source;
       transmittance *= 1.0 - alpha;
       distanceAlongRay += stepLength;
@@ -362,9 +420,10 @@ const volumeFragment = /* glsl */ `
   }
 `;
 
-function fireVolume(seed: string, time: { value: number }, wind: { value: Vector2 }, quality: QualityLevel): Mesh {
+function fireVolume(seed: string, time: { value: number }, wind: { value: Vector2 }, quality: QualityLevel) {
   const random = createRandom(`${seed}/flame-volume`);
   const inverse = new Matrix4(), clip = new Matrix4();
+  let sceneDepth: SceneDepthField | undefined;
   const material = new ShaderMaterial({
     name: 'raymarched-campfire-and-smoke', transparent: true, premultipliedAlpha: true,
     side: BackSide, depthWrite: false, depthTest: true, fog: true, dithering: true,
@@ -372,6 +431,9 @@ function fireVolume(seed: string, time: { value: number }, wind: { value: Vector
       uTime: time, uWind: wind, uSteps: { value: STEPS[quality] },
       uSeed: { value: new Vector3(random() * 31, random() * 31, random() * 31) },
       uWorldToLocal: { value: inverse }, uLocalToClip: { value: clip },
+      uSceneDepth: { value: null }, uSceneInverseSize: { value: new Vector2(1, 1) },
+      uSceneInverseProjection: { value: new Matrix4() }, uSceneCameraWorld: { value: new Matrix4() },
+      uSceneDepthEnabled: { value: 0 },
     }]),
     vertexShader: volumeVertex, fragmentShader: volumeFragment,
   });
@@ -385,8 +447,16 @@ function fireVolume(seed: string, time: { value: number }, wind: { value: Vector
   mesh.onBeforeRender = (_renderer, _scene, camera) => {
     inverse.copy(mesh.matrixWorld).invert();
     clip.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse).multiply(mesh.matrixWorld);
+    material.uniforms.uSceneDepthEnabled!.value = Number(sceneDepth?.available && sceneDepth.camera === camera);
+    if (sceneDepth) {
+      material.uniforms.uSceneDepth!.value = sceneDepth.texture;
+      (material.uniforms.uSceneInverseSize!.value as Vector2).set(1 / sceneDepth.size.x, 1 / sceneDepth.size.y);
+      (material.uniforms.uSceneInverseProjection!.value as Matrix4).copy(camera.projectionMatrixInverse);
+      (material.uniforms.uSceneCameraWorld!.value as Matrix4).copy(camera.matrixWorld);
+    }
+    material.uniformsNeedUpdate = true;
   };
-  return mesh;
+  return { mesh, setSceneDepth(field: SceneDepthField) { sceneDepth = field; } };
 }
 
 function sparks(seed: string, time: { value: number }, wind: { value: Vector2 }, quality: QualityLevel): Points<BufferGeometry, ShaderMaterial> {
@@ -468,6 +538,7 @@ export interface Campfire {
   readonly group: Group;
   update(frame: EnvironmentSnapshot): void;
   setQuality(quality: QualityLevel): void;
+  setSceneDepth(field: SceneDepthField): void;
 }
 
 /**
@@ -514,41 +585,38 @@ export function createCampfire(seed: string, quality: QualityLevel): Campfire {
   coals.name = 'banked-ember-bed'; coals.castShadow = false; coals.receiveShadow = true;
   const volume = fireVolume(seed, time, wind, quality);
   const embers = sparks(seed, time, wind, quality);
-  const light = new PointLight(new Color('#ffbc82'), 6.8, 12, 2);
-  light.name = 'campfire-light'; light.position.set(0, 0.56, 0);
-  light.castShadow = quality !== 'low';
-  light.shadow.camera.near = .08;
-  light.shadow.camera.far = 9;
-  light.shadow.camera.layers.set(2);
-  light.shadow.bias = -.00016;
-  light.shadow.normalBias = .014;
-  light.shadow.radius = 10;
-  light.shadow.mapSize.setScalar(quality === 'high' ? 768 : 512);
+  const lights = [new PointLight(new Color('#ffbb79'), 6.8*.30, 9, 2),
+    new PointLight(new Color('#ffd3a4'), 6.8*.70, 9, 2)];
+  lights[0]!.position.set(-.14, .46, .055); lights[1]!.position.set(.12, .74, -.055);
+  lights.forEach((light, i) => {
+    light.name = `campfire-area-sample-${i}`; light.castShadow = quality !== 'low';
+    light.shadow.camera.near = .055; light.shadow.camera.far = 9;
+    light.shadow.camera.layers.set(2); light.shadow.bias = -.00009;
+    light.shadow.normalBias = .004; light.shadow.radius = 12;
+    light.shadow.mapSize.setScalar(512);
+  });
   const coalLight=new PointLight('#ff6625',.45,3.1,2);
   coalLight.position.set(.08,.15,.12);
   coalLight.name='ember-bounce';
-  group.add(stones, coals, volume, embers, light,coalLight);
+  group.add(stones, coals, volume.mesh, embers, ...lights, coalLight);
   group.userData.generatedFire = { flameHeight: .98, hearthRadius: 0.86, fixedAssets: 0 };
   const phase = random() * TAU;
   return {
     group,
+    setSceneDepth: field => volume.setSceneDepth(field),
     update(frame): void {
       time.value = frame.elapsed;
       wind.value.set(Math.max(-1.5, Math.min(1.5, frame.wind.x)), Math.max(-1.0, Math.min(1.0, frame.wind.z)));
-      light.intensity = 6.8 * (0.94 + 0.075 * Math.sin(frame.elapsed * 5.7 + phase)
+      const flicker = 0.94 + 0.075 * Math.sin(frame.elapsed * 5.7 + phase)
         + 0.040 * Math.sin(frame.elapsed * 13.1 + phase * 2.3)
-        + 0.025 * Math.sin(frame.elapsed * 21.7));
+        + 0.025 * Math.sin(frame.elapsed * 21.7);
+      lights[0]!.intensity=6.8*.30*flicker;
+      lights[1]!.intensity=6.8*.70*flicker*(1+.035*Math.sin(frame.elapsed*8.1+phase));
     },
     setQuality(next): void {
-      (volume.material as ShaderMaterial).uniforms.uSteps!.value = STEPS[next];
+      (volume.mesh.material as ShaderMaterial).uniforms.uSteps!.value = STEPS[next];
       embers.geometry.setDrawRange(0, SPARKS[next]);
-      light.castShadow = next !== 'low';
-      const size = next === 'high' ? 768 : 512;
-      if (light.shadow.mapSize.x !== size) {
-        light.shadow.map?.dispose();
-        light.shadow.map = null;
-        light.shadow.mapSize.setScalar(size);
-      }
+      lights.forEach(light => { light.castShadow = next !== 'low'; });
     },
   };
 }

@@ -42,7 +42,21 @@ npm run capture -- --device mobile --seed 林间-02 --output test-results/captur
 
 动态形态也需要实拍。`npm run capture -- --seconds 4 --output test-results/captures/after-motion` 通过真实的继续／暂停操作，在模拟时间达到 4 秒后冻结并截图。脚本会等最后一帧实际提交，避免捕获 GPU 仍在绘制的旧状态；报告同时记录请求时间和实际暂停时间。该选项允许 0–30 秒，不通过修改系统时间或伪造帧推进来取得图片。
 
-检查高像素密度显示器时，可加 `--dpr 2`，例如 `npm run capture -- --device desktop --dpr 2 --output test-results/captures/retina`。它模拟浏览器的显示像素比，仍受项目画质和总像素预算限制；报告记录实际 DPR 与绘制尺寸，输出 PNG 继续保持 CSS 视口尺寸。允许 1–3，默认沿用所选设备参数。
+检查高像素密度显示器时，可加 `--dpr 2`。它模拟浏览器的显示像素比，允许 1–3，默认沿用所选设备参数。`--scale css` 是默认选项，PNG 保持 CSS 视口尺寸；`--scale device` 保留浏览器的设备像素，便于放大检查细枝、表面高光与边缘：
+
+```bash
+npm run capture -- --device desktop --dpr 2 --scale device --output test-results/captures/retina
+```
+
+该命令的视口仍是 1440 × 900，PNG 为 2880 × 1800。截图的设备像素数不等同于场景实际渲染像素数：WebGL 画质仍限制 DPR 和总像素预算，报告中的 `drawingWidth` / `drawingHeight` 才是实际画布绘制尺寸。
+
+| 画质 | DPR 上限 | 绘制像素预算 |
+| --- | --- | --- |
+| 低 | 1 | 850,000 |
+| 中 | 1.25 | 1,500,000 |
+| 高 | 2 | 8,294,400（3840 × 2160） |
+
+例如 4K 视口在高档、DPR 1 时可以按 3840 × 2160 绘制；更大的视口或更高的 DPR 会在预算内缩放。手机自动选择中档，即使以设备像素保存 PNG，也不会自行切换到高档。较大的截图用于细节检查，不构成实时性能或摄影写实的验收结论。
 
 ## 使用已安装的 Chrome 或现有 Chromium
 

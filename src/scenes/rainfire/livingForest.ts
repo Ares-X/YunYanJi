@@ -1,14 +1,14 @@
 import {
-  BufferGeometry, Color, DoubleSide, Float32BufferAttribute, Group, Mesh,
+  BufferGeometry, CatmullRomCurve3, Color, DoubleSide, Float32BufferAttribute, Group, Mesh,
   MeshStandardMaterial, Vector3,
 } from 'three';
 import { createRandom, randomBetween } from '../../core/random';
-import { BARK_WIDTH_METRES, BARK_HEIGHT_METRES, createBarkSurface } from './barkSurface';
+import { BARK_WIDTH_METRES, BARK_HEIGHT_METRES, createBarkReliefSampler, createBarkSurface } from './barkSurface';
+import { growSpaceTree } from './forestGrowth';
 
 const UP = new Vector3(0, 1, 0);
 const VIEWPOINT = new Vector3(1, 1.25, 4.5);
 const TAU = Math.PI * 2;
-const GOLDEN = Math.PI * (3 - Math.sqrt(5));
 type Curve = (t: number) => Vector3;
 type Height = (x: number, z: number) => number;
 
@@ -22,6 +22,7 @@ class Surface {
   indices: number[] = [];
   rootHeight = 0;
   groundAt?: Height;
+  barkRelief?: (u:number,v:number,identity:number)=>number;
   vertex(p: Vector3, u: number, v: number, color: Color, identity: number): number {
     const at = this.positions.length / 3;
     this.positions.push(p.x, p.y, p.z);
@@ -67,7 +68,7 @@ function growthNoise(x:number,y:number):number {
 }
 
 function tube(surface: Surface, curve: Curve, radius: number, terminal: number,
-  segments: number, sides: number, identity: number, color: Color, buttressed = false, collar = 0): void {
+  segments: number, sides: number, identity: number, color: Color, buttressed = false, collar = 0, radiusAt?: (t:number)=>number, cap = true): void {
   const first = surface.positions.length / 3;
   const length = curve(0).distanceTo(curve(1));
   let transportedSide:Vector3|undefined;
@@ -86,7 +87,7 @@ function tube(surface: Surface, curve: Curve, radius: number, terminal: number,
     const top = side.clone().cross(tangent).normalize();
     const axial=t*length;
     const baseProfile=buttressed ? .73+.27*Math.exp(-axial*.72) : 1;
-    const taper = terminal + (radius - terminal)*Math.pow(1-t,buttressed?.78:.9)*baseProfile;
+    const taper = radiusAt ? radiusAt(t) : terminal + (radius - terminal)*Math.pow(1-t,buttressed?.78:.9)*baseProfile;
     const swell=1+(growthNoise(axial*2.5,identity*7.17)-.5)*(buttressed?.11:.18);
     for (let sector = 0; sector <= sides; sector++) {
       const angle = sector / sides * TAU;
@@ -99,7 +100,9 @@ function tube(surface: Surface, curve: Curve, radius: number, terminal: number,
       const nodule=(growthNoise(Math.cos(angle)*1.7+identity*3.1,Math.sin(angle)*1.7+axial*1.35)-.5)
         *Math.min(.026,radius*.18)*Math.sin(Math.PI*t);
       const shoulder=1+collar*Math.exp(-t*15);
-      const r=taper*fluting*swell*shoulder+foot+nodule;
+      const relief=buttressed&&segments>200&&surface.barkRelief
+        ? surface.barkRelief(sector/sides*TAU*radius,t*length,identity) : 0;
+      const r=taper*fluting*swell*shoulder+foot+nodule+relief;
       const q = p.clone().addScaledVector(side, Math.cos(angle) * r)
         .addScaledVector(top, Math.sin(angle) * r);
       if(buttressed&&surface.groundAt) {
@@ -117,9 +120,11 @@ function tube(surface: Surface, curve: Curve, radius: number, terminal: number,
     surface.triangle(a, b, a + 1);
     surface.triangle(a + 1, b, b + 1);
   }
-  const end = surface.vertex(curve(1), 0, length, color, identity);
-  const last = first + segments * stride;
-  for (let side = 0; side < sides; side++) surface.triangle(end, last + side + 1, last + side);
+  if(cap) {
+    const end = surface.vertex(curve(1), 0, length, color, identity);
+    const last = first + segments * stride;
+    for (let side = 0; side < sides; side++) surface.triangle(end, last + side + 1, last + side);
+  }
 }
 
 function barkMaterial(seed:string): MeshStandardMaterial {
@@ -169,7 +174,7 @@ function barkMaterial(seed:string): MeshStandardMaterial {
         float rootDistance=max(0.0,vForestPosition.y-vBarkRootHeight);
         vec2 weatherPoint=vec2(vForestPosition.x*.74+vForestPosition.z*.61,vForestPosition.y*.59);
         float damp=smoothstep(.34,.74,growthPatch(weatherPoint)*.72+growthPatch(weatherPoint*2.7)*.28);
-        diffuseColor.rgb*=mix(vec3(1),vec3(.73,.78,.77),damp*.62);
+        diffuseColor.rgb*=mix(vec3(1),vec3(.65,.64,.61),damp*.67);
         float rootPatch=growthPatch(vForestPosition.xz*1.7+vec2(.17,.83));
         float moss=barkSample.a*(1.0-smoothstep(.22,1.8,rootDistance))
           *smoothstep(.28,.67,rootPatch);
@@ -179,7 +184,7 @@ function barkMaterial(seed:string): MeshStandardMaterial {
       .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
         roughnessFactor=clamp(roughnessFactor-damp*.08+moss*.06,.58,.98);`);
   };
-  material.customProgramCacheKey = () => 'living-forest-grown-bark-v5';
+  material.customProgramCacheKey = () => 'living-forest-grown-bark-v7';
   return material;
 }
 
@@ -253,264 +258,88 @@ function leaf(surface: Surface, root: Vector3, direction: Vector3, length: numbe
 
 interface TreeSpec { x:number;z:number;height:number;radius:number;young?:boolean; }
 
-/** A broadleaf sapling divides into leaders, not a stack of radial arms. */
-function saplingCrown(spec:TreeSpec,identity:number,wood:Surface,leaves:Surface,
-  random:()=>number,trunk:Curve,ground:number,woodColor:Color,near:boolean,far:boolean):void {
-  const height=spec.height;
-  const forkCount=2+Math.floor(random()*3);
-  const randomBearing=random()*TAU;
-  const bearing=spec.z< -34&&spec.x> -3&&spec.x<5
-    ? Math.atan2(.22,-1)-TAU/forkCount : randomBearing;
-  const tangent=(curve:Curve,t:number)=>curve(Math.min(1,t+.015)).sub(curve(Math.max(0,t-.015))).normalize();
-  const makeLimb=(start:Vector3,direction:Vector3,end:Vector3,radius:number,terminal:number,level:number):Curve=>{
-    const length=start.distanceTo(end);
-    const axis=end.clone().sub(start).normalize();
-    let side=axis.clone().cross(UP);if(side.lengthSq()<.001)side.set(1,0,0);else side.normalize();
-    const cross=side.clone().cross(axis).normalize();
-    const bendA=randomBetween(random,-.030,.030)*length;
-    const bendB=randomBetween(random,-.023,.023)*length;
-    const phase=random()*TAU;
-    const base=cubic(start,start.clone().addScaledVector(direction,length*.34),
-      end.clone().addScaledVector(UP,-length*.17),end);
-    const curve:Curve=t=>base(t)
-      .addScaledVector(side,Math.sin(Math.PI*t)*Math.sin(t*5.4+phase)*bendA)
-      .addScaledVector(cross,Math.sin(Math.PI*t)*Math.sin(t*7.2-phase)*bendB);
-    const shoulder=level===0?(radius/spec.radius>.60?0:.30):.50;
-    if(level<2||near)tube(wood,curve,radius,terminal,level===0?13:level===1?6:3,
-      level===0?8:level===1?5:3,identity,woodColor,false,shoulder);
-    return curve;
-  };
-  const putLeaf=(attach:Vector3,direction:Vector3)=>{
-    const size=randomBetween(random,.12,.205)*(far?1.09:1);
-    const color=new Color().setRGB(.071,.118,.041).multiplyScalar(randomBetween(random,.65,1.28));
-    if(random()<.045)color.setRGB(.12,.112,.052).multiplyScalar(randomBetween(random,.75,1.1));
-    leaf(leaves,attach,direction,size,size*randomBetween(random,.55,.78),
-      randomBetween(random,-.90,.90),color,random()*37,attach.distanceToSquared(VIEWPOINT)<225);
-  };
-  const terminalSpray=(root:Vector3,direction:Vector3,size:number)=>{
-    let side=direction.clone().cross(UP);
-    if(side.lengthSq()<.001)side.set(1,0,0);else side.normalize();
-    const around=side.clone().cross(direction).normalize();
-    const twist=random()*TAU;
-    for(let shoot=0;shoot<3;shoot++) {
-      // Individual shoots diverge through a volume. No shared horizontal
-      // leaf deck runs from the trunk to the edge of the crown.
-      const angle=twist+shoot*2.09+randomBetween(random,-.50,.50);
-      const growth=direction.clone().multiplyScalar(.57)
-        .addScaledVector(side,Math.cos(angle)*.72)
-        .addScaledVector(around,Math.sin(angle)*.62)
-        .addScaledVector(UP,randomBetween(random,-.30,.15)).normalize();
-      const length=size*randomBetween(random,.71,1.15);
-      const end=root.clone().addScaledVector(growth,length).addScaledVector(UP,-length*.25);
-      const curve=cubic(root,root.clone().addScaledVector(growth,length*.34),
-        end.clone().addScaledVector(growth,-length*.26).addScaledVector(UP,length*.10),end);
-      if(near&&root.y<7.5)tube(wood,curve,.0025,.0004,3,3,identity,woodColor);
-      const count=far?14:18;
-      for(let k=0;k<count;k++) {
-        const at=(k+randomBetween(random,.12,.92))/count;
-        const attach=curve(at);
-        const axis=tangent(curve,at);
-        let lateral=axis.clone().cross(UP);
-        if(lateral.lengthSq()<.001)lateral.set(1,0,0);else lateral.normalize();
-        const upper=lateral.clone().cross(axis).normalize();
-        const leafAngle=k*2.399+twist+randomBetween(random,-.50,.50);
-        const out=axis.clone().multiplyScalar(randomBetween(random,.18,.48))
-          .addScaledVector(lateral,Math.cos(leafAngle)*.88)
-          .addScaledVector(upper,Math.sin(leafAngle)*.64)
-          .addScaledVector(UP,-.22).normalize();
-        putLeaf(attach,out);
-      }
-    }
-  };
-  for(let fork=0;fork<forkCount;fork++) {
-    const low=fork===1;
-    const at=fork===0?.46:low?randomBetween(random,.21,.30):randomBetween(random,.31,.43);
-    const angle=bearing+fork*(TAU/forkCount)+randomBetween(random,-.65,.65);
-    const outward=new Vector3(Math.cos(angle),0,Math.sin(angle));
-    const sideways=outward.clone().cross(UP);
-    const root=trunk(at);
-    const spread=height*randomBetween(random,low?.28:.19,low?.37:.31);
-    const end=root.clone().addScaledVector(outward,spread);
-    end.y=ground+height*(fork===0?randomBetween(random,.80,.94):low?randomBetween(random,.44,.58):randomBetween(random,.64,.79));
-    const opening=tangent(trunk,at).multiplyScalar(.81).addScaledVector(outward,.25).normalize();
-    const primaryRadius=spec.radius*(fork===0?.64:.52);
-    const primary=makeLimb(root,opening,end,primaryRadius,primaryRadius*.35,0);
-    const children=far?3:4;
-    for(let child=0;child<children;child++) {
-      const t=randomBetween(random,.48,.96);
-      const start=primary(t);
-      const sign=child%2?1:-1;
-      const push=outward.clone().multiplyScalar(.48).addScaledVector(sideways,sign*randomBetween(random,.45,.92))
-        .addScaledVector(UP,randomBetween(random,low?-.05:.06,.57)).normalize();
-      const extension=height*randomBetween(random,.14,.24);
-      const tip=start.clone().addScaledVector(push,extension);
-      const secondary=makeLimb(start,tangent(primary,t),tip,primaryRadius*.33,.007,1);
-      for(let split=0;split<3;split++) {
-        const s=randomBetween(random,.43,.98);
-        const branchRoot=secondary(s);
-        const axis=tangent(secondary,s);
-        const across=axis.clone().cross(UP).normalize();
-        const spreadSign=split%2?1:-1;
-        const growth=axis.clone().multiplyScalar(.58).addScaledVector(across,spreadSign*randomBetween(random,.43,.83))
-          .addScaledVector(UP,randomBetween(random,-.24,.36)).normalize();
-        const twigLength=height*randomBetween(random,.065,.13);
-        const twigEnd=branchRoot.clone().addScaledVector(growth,twigLength);
-        const tertiary=makeLimb(branchRoot,axis,twigEnd,.006,.0015,2);
-        for(let bud=0;bud<4;bud++) {
-          const u=randomBetween(random,.47,1);
-          const budRoot=tertiary(u);
-          const budDirection=tangent(tertiary,u).addScaledVector(UP,randomBetween(random,-.20,.22)).normalize();
-          terminalSpray(budRoot,budDirection,Math.min(.62,height*randomBetween(random,.045,.075)));
-        }
-      }
-    }
-  }
-}
-
+/** A complete space-colonized tree, including crown regions outside the starting view. */
 function tree(spec:TreeSpec,identity:number,wood:Surface,leaves:Surface,seed:string,heightAt:Height):void {
-  const random=createRandom(`${seed}/living-tree/${identity}`);
-  const {x,z,height,radius}=spec;
-  const ground=heightAt(x,z)-.065;
-  wood.rootHeight=ground+.065;
-  wood.groundAt=heightAt;
-  const distance=Math.hypot(x-1,z-4.5);
-  const near=distance<18;
-  const far=distance>48;
-  const young=Boolean(spec.young);
-  const phase=random()*TAU;
-  const lean=new Vector3(randomBetween(random,-1.9,1.9),0,randomBetween(random,-1.3,1.3));
-  const woodColor=new Color(young?0x6d705c:0x777468).multiplyScalar(randomBetween(random,.80,1.05));
-  const bendX=Math.sin(phase*1.37+.8)*radius*.95;
-  const bendZ=Math.cos(phase*.91-.5)*radius*.77;
-  const trunk:Curve=t=>new Vector3(
-    x+lean.x*(t*.64+Math.pow(t,1.7)*.36)+bendX*(1-Math.exp(-t*height*.62))
-      +(Math.sin(t*height*.48+phase)-Math.sin(phase))*radius*.21,
-    ground+t*height,
-    z+lean.z*(t*.64+Math.pow(t,1.7)*.36)+bendZ*(1-Math.exp(-t*height*.56))
-      +(Math.sin(t*height*.39-phase)+Math.sin(phase))*radius*.19);
-  if(young)tube(wood,t=>trunk(t*.46),radius,radius*.62,near?22:14,near?10:7,identity,woodColor,true);
-  else tube(wood,trunk,radius,.006,near?88:far?15:24,near?28:far?6:9,identity,woodColor,true);
-  if(near&&!young) {
-    // Roots enter the soil quickly, follow its surface and vary in direction;
-    // most of the spreading root plate is buried rather than a ring of cones.
-    const roots=4;
-    for(let i=0;i<roots;i++) {
-      const angle=phase+i*GOLDEN+randomBetween(random,-.55,.55);
-      const length=radius*randomBetween(random,1.65,3.5);
-      const direction=new Vector3(Math.cos(angle),0,Math.sin(angle));
-      const lateral=new Vector3(-direction.z,0,direction.x);
-      const start=trunk(.002).addScaledVector(direction,radius*.34);
-      const end=new Vector3(x+direction.x*length,0,z+direction.z*length);
-      end.y=heightAt(end.x,end.z)-.17;
-      const bend=randomBetween(random,-.45,.45);
-      const control=start.clone().addScaledVector(direction,length*.40)
-        .addScaledVector(lateral,bend);
-      control.y=heightAt(control.x,control.z)+randomBetween(random,.045,.16);
-      const second=end.clone().addScaledVector(direction,-length*.28).addScaledVector(lateral,-bend*.35);
-      second.y=heightAt(second.x,second.z)+randomBetween(random,-.07,.015);
-      const curve=cubic(start,control,second,end);
-      tube(wood,curve,radius*randomBetween(random,.19,.34),.002,11,9,identity+i*.001,woodColor);
-    }
+  const random=createRandom(`${seed}/grown-tree/${identity}`);
+  const distance=Math.hypot(spec.x-1,spec.z-4.5),near=distance<20,far=distance>48;
+  const hero=Boolean(spec.young)&&(identity===5||identity===6||identity===9);
+  const ground=heightAt(spec.x,spec.z)-.055;
+  wood.rootHeight=ground+.055;wood.groundAt=heightAt;
+  const growth=growSpaceTree(`${seed}/tree-${identity}`,{
+    height:spec.height,radius:spec.radius,
+    crownBase:spec.height*(spec.young?randomBetween(random,.19,.28):randomBetween(random,.34,.45)),
+    spread:spec.height*(spec.young?randomBetween(random,.34,.43):randomBetween(random,.21,.29)),
+    coarsePoints:hero?320:far?130:220,finePoints:hero?1600:far?320:850,
+    maxNodes:hero?2400:far?650:1200,
+    lightX:-spec.x/Math.max(8,Math.abs(spec.x))*.75,lightZ:.25,
+  });
+  const world=(i:number)=>{
+    const p=growth.nodes[i]!.point;
+    return new Vector3(spec.x+p.x,ground+p.y,spec.z+p.z);
+  };
+  const radius=(i:number)=>{
+    const node=growth.nodes[i]!;
+    return node.radius*(.79+.21*Math.exp(-node.point.y*.60));
+  };
+  const woodColor=new Color(spec.young?0x716d5a:0x625749).multiplyScalar(randomBetween(random,.84,1.04));
+  for(const chain of growth.chains){
+    const root=chain[0]!,tip=chain[chain.length-1]!;
+    const points=chain.map(world);
+    const curve=new CatmullRomCurve3(points,false,'centripetal');
+    const firstRadius=root===0?radius(root):Math.min(radius(root),radius(chain[1]!)*1.32);
+    const radii=chain.map((id,i)=>i===0?firstRadius:radius(id));
+    const radiusAt=(t:number)=>{
+      const n=t*(radii.length-1),at=Math.min(radii.length-2,Math.floor(n)),fraction=n-at;
+      return radii[at]!*(1-fraction)+radii[at+1]!*fraction;
+    };
+    const primary=root===0;
+    const maxRadius=Math.max(...radii);
+    // Millimetre twigs at tens of metres are smaller than a pixel in every
+    // permitted view. Keep their graph and leaves, omit only their tube mesh.
+    if(distance>25&&maxRadius<.0045)continue;
+    const sides=primary&&near&&!spec.young?120:maxRadius>.09?(near?16:10):maxRadius>.018?(near?9:6):far?4:5;
+    const segments=primary&&near&&!spec.young?224:Math.max(1,Math.ceil((chain.length-1)*(maxRadius>.025&&near?1.45:1)));
+    const shade=growth.nodes[tip]!.dead?.81:1;
+    tube(wood,t=>curve.getPoint(t),firstRadius,radii[radii.length-1]!,segments,sides,
+      identity+root*.00001,woodColor.clone().multiplyScalar(shade),primary,0,radiusAt,!growth.nodes[tip]!.children.length);
   }
-  if(!young)for(let i=0;i<(near?4:1);i++) {
-    const at=randomBetween(random,.06,.22),a=trunk(at),angle=random()*TAU;
-    const d=new Vector3(Math.cos(angle),randomBetween(random,-.12,.24),Math.sin(angle));
-    const length=randomBetween(random,.13,.41)*(1-at);
-    const end=a.clone().addScaledVector(d,length);
-    tube(wood,cubic(a,a.clone().addScaledVector(d,length*.3),end,end),
-      radius*randomBetween(random,.06,.12),.004,4,near?6:4,identity+i*.01,woodColor);
+  // Surface roots follow the terrain. Their shoulders grow continuously from
+  // the basal bole; distal ends descend below soil rather than resting on it.
+  if(near&&!spec.young)for(let i=0;i<5;i++){
+    const angle=random()*TAU,length=spec.radius*randomBetween(random,1.65,3.0);
+    const direction=new Vector3(Math.cos(angle),0,Math.sin(angle)),side=direction.clone().cross(UP);
+    const start=world(0).addScaledVector(UP,.11).addScaledVector(direction,spec.radius*.18);
+    const end=new Vector3(spec.x+direction.x*length,0,spec.z+direction.z*length);
+    end.y=heightAt(end.x,end.z)-.13;
+    const a=start.clone().addScaledVector(direction,length*.36).addScaledVector(side,randomBetween(random,-.22,.22));
+    a.y=heightAt(a.x,a.z)+randomBetween(random,.055,.15);
+    const b=end.clone().addScaledVector(direction,-length*.26);b.y=heightAt(b.x,b.z)-.025;
+    tube(wood,cubic(start,a,b,end),spec.radius*randomBetween(random,.22,.31),.003,14,12,identity,woodColor);
   }
-
-  if(young) {
-    saplingCrown(spec,identity,wood,leaves,random,trunk,ground,woodColor,near,far);
-    return;
-  }
-
-  // Broad overlapping crowns occupy the visible forest. Main limbs fork at
-  // unequal heights; the crown's outline comes from many small leaf surfaces.
-  const primaryCount=far?7:10;
-  const occupiedJunctions:number[]=[];
-  for(let primary=0;primary<primaryCount;primary++) {
-    let t=randomBetween(random,.32,.73);
-    if(near) {
-      for(let attempt=0;attempt<8&&occupiedJunctions.some(old=>Math.abs(old-t)*height<.68);attempt++) {
-        t=randomBetween(random,.32,.73);
-      }
-      occupiedJunctions.push(t);
-    }
-    const angle=phase+primary*GOLDEN+randomBetween(random,-.95,.95);
-    const start=trunk(t);
-    const outward=new Vector3(Math.cos(angle),0,Math.sin(angle));
-    const sideways=outward.clone().cross(UP);
-    const crownWidth=(height*.245)
-      *Math.pow(Math.sin(t*Math.PI)*.73+.27,.65);
-    const length=crownWidth*randomBetween(random,.64,1.20);
-    const rise=length*randomBetween(random,.16,.69);
-    const end=start.clone().addScaledVector(outward,length).addScaledVector(UP,rise);
-    const curve=cubic(start,start.clone().addScaledVector(outward,length*.22).addScaledVector(UP,rise*.10),
-      end.clone().addScaledVector(outward,-length*.25).addScaledVector(UP,-rise*.49),end);
-    const branchRadius=radius*(1-t)*randomBetween(random,.29,.46);
-    tube(wood,curve,branchRadius,Math.min(.004,branchRadius*.18),near?9:far?3:4,
-      near?7:4,identity+primary*.01,woodColor);
-    if(near&&start.y<9.2) {
-      // A thick, tapering branch collar grows out of the bole and continues
-      // into the limb. This hides the cylinder intersection inside a smooth
-      // healed shoulder, with no detached cap or bead at the visible joint.
-      const collarEnd=Math.min(.32,.95/length);
-      const parentRadius=.006+(radius-.006)*Math.pow(1-t,.68);
-      const tipRadius=.004+(branchRadius-.004)*Math.pow(1-collarEnd,.9);
-      tube(wood,u=>curve(u*collarEnd),Math.max(branchRadius*1.20,parentRadius*.69),
-        tipRadius*1.015,9,14,identity+primary*.01,woodColor);
-    }
-    const secondaryCount=far?4:5;
-    for(let second=0;second<secondaryCount;second++) {
-      const at=.24+(second+randomBetween(random,.1,.9))/secondaryCount*.74;
-      const root=curve(at),sign=second%2?1:-1;
-      const direction=outward.clone().multiplyScalar(.44).addScaledVector(sideways,sign*.88)
-        .addScaledVector(UP,randomBetween(random,-.09,.45)).normalize();
-      const extension=length*randomBetween(random,.38,.61)*(1-at*.25);
-      const tip=root.clone().addScaledVector(direction,extension);
-      const secondary=cubic(root,root.clone().addScaledVector(direction,extension*.31).addScaledVector(UP,.05),
-        tip.clone().addScaledVector(direction,-extension*.20).addScaledVector(UP,-extension*.10),tip);
-      // Fine secondary wood in distant crowns is smaller than a pixel. Spend
-      // that budget on the leaf area that actually closes the canopy.
-      if(!far)tube(wood,secondary,Math.max(.003,branchRadius*(1-at)*.45),.001,
-        near?4:2,near?4:3,identity+second*.002,woodColor);
-      const tertiaryCount=far?4:5;
-      for(let third=0;third<tertiaryCount;third++) {
-        const u=.14+(third+randomBetween(random,.1,.9))/tertiaryCount*.85;
-        const node=secondary(u);
-        const tangent=secondary(Math.min(1,u+.025)).sub(secondary(Math.max(0,u-.025))).normalize();
-        const lateral=tangent.clone().cross(UP).normalize();
-        const tw=third%2?1:-1;
-        const growth=tangent.clone().multiplyScalar(.60).addScaledVector(lateral,tw*.72)
-          .addScaledVector(UP,randomBetween(random,-.27,.22)).normalize();
-        const twigLength=Math.max(.24,extension*randomBetween(random,.35,.62)*(1-u*.24));
-        const twigTip=node.clone().addScaledVector(growth,twigLength).addScaledVector(UP,-twigLength*.17);
-        const twig=cubic(node,node.clone().addScaledVector(growth,twigLength*.30),
-          twigTip.clone().addScaledVector(growth,-twigLength*.22),twigTip);
-        if(near&&node.y<5.5)tube(wood,twig,.0027,.0005,3,3,identity,woodColor);
-        const count=far?15:22;
-        for(let k=0;k<count;k++) {
-          const f=(k+randomBetween(random,.1,.9))/count;
-          const attach=twig(f);
-          // The whole permitted look-up range is retained, including the
-          // portrait field of view; only crowns above a 44-degree ray are
-          // beyond the interactive camera's possible view. Saplings keep
-          // their complete crowns, regardless of the initial composition.
-          if(attach.y>2.0+Math.hypot(attach.x-1,attach.z-4.5)*.966)continue;
-          const side=k%2?1:-1;
-          const leafDirection=growth.clone().multiplyScalar(randomBetween(random,.21,.54))
-            .addScaledVector(lateral,side*randomBetween(random,.57,1))
-            .addScaledVector(UP,randomBetween(random,-.52,.16)).normalize();
-          const leafLength=randomBetween(random,.12,.205)*(far?1.15:1);
-          const leafColor=new Color().setRGB(.071,.118,.041).multiplyScalar(randomBetween(random,.64,1.27));
-          if(random()<.045)leafColor.setRGB(.12,.112,.052).multiplyScalar(randomBetween(random,.75,1.1));
-          const detailed=attach.distanceToSquared(VIEWPOINT)<57;
-          leaf(leaves,attach,leafDirection,leafLength,leafLength*randomBetween(random,.47,.75),
-            randomBetween(random,-.75,.75),leafColor,random()*37,detailed);
-        }
-      }
+  // Leaf initiation is tied to thin current-season internodes, continuously
+  // along each twig. There are no arbitrary balls or cards placed at tips.
+  for(let i=1;i<growth.nodes.length;i++){
+    const node=growth.nodes[i]!;
+    if(node.dead||node.flow>(far?3:7)||node.born<100&&node.remaining>.16)continue;
+    const a=world(node.parent),b=world(i),axis=b.clone().sub(a),length=axis.length();
+    if(length<.012)continue;axis.normalize();
+    let side=axis.clone().cross(UP);if(side.lengthSq()<.001)side.set(1,0,0);else side.normalize();
+    const upper=side.clone().cross(axis).normalize();
+    const steps=Math.max(1,Math.ceil(length/(far?.068:hero?.038:.048)));
+    const twist=i*2.399+identity*.73;
+    for(let k=0;k<steps;k++)for(let pair=0;pair<2;pair++){
+      const t=(k+randomBetween(random,.12,.90))/steps;
+      const attach=a.clone().lerp(b,t);
+      const phi=twist+k*2.399+pair*Math.PI+randomBetween(random,-.24,.24);
+      const out=axis.clone().multiplyScalar(randomBetween(random,.14,.42))
+        .addScaledVector(side,Math.cos(phi)*.93).addScaledVector(upper,Math.sin(phi)*.62)
+        .addScaledVector(UP,-.10).normalize();
+      const size=randomBetween(random,.095,.17)*(spec.young?1.04:1);
+      const color=new Color().setRGB(.065,.107,.037).multiplyScalar(randomBetween(random,.67,1.24));
+      if(random()<.035)color.setRGB(.11,.106,.044);
+      const detailed=attach.distanceToSquared(VIEWPOINT)<400;
+      leaf(leaves,attach,out,size,size*randomBetween(random,.53,.76),randomBetween(random,-.62,.62),
+        color,random()*37,detailed);
     }
   }
 }
@@ -553,6 +382,7 @@ export function buildLivingForest(seed:string,heightAt:Height):{group:Group;tree
     specs.push({x,z,height,radius:height*randomBetween(random,.014,.022)});
   }
   const nearWood=new Surface(),farWood=new Surface(),nearLeaves=new Surface(),farLeaves=new Surface();
+  nearWood.barkRelief=createBarkReliefSampler(seed);
   specs.forEach((spec,i)=>{
     const shadows=Math.hypot(spec.x+.8,spec.z+1.6)<14;
     tree(spec,i+1,shadows?nearWood:farWood,shadows?nearLeaves:farLeaves,seed,heightAt);

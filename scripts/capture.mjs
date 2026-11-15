@@ -12,6 +12,7 @@ const { values } = parseArgs({
     seed: { type: 'string', default: 'yunyanji-rainfire-01' },
     seconds: { type: 'string', default: '0' },
     dpr: { type: 'string' },
+    scale: { type: 'string', default: 'css' },
     output: { type: 'string', default: 'test-results/captures' },
     'skip-build': { type: 'boolean', default: false },
     help: { type: 'boolean', short: 'h', default: false },
@@ -24,6 +25,7 @@ if (values.help) {
   --seed VALUE                  Reproducible landscape seed (default: yunyanji-rainfire-01)
   --seconds NUMBER              Let the scene animate before capture, 0–30 (default: 0)
   --dpr NUMBER                  Emulate display pixel ratio, 1–3 (default: device profile)
+  --scale css|device            CSS-size preview or full device-pixel capture (default: css)
   --output DIRECTORY            Destination (default: test-results/captures)
   --skip-build                  Reuse an already current dist/ build
 
@@ -41,6 +43,7 @@ async function capture() {
   if (!Number.isFinite(seconds) || seconds < 0 || seconds > 30) throw new Error('--seconds must be between 0 and 30.');
   const dpr = values.dpr === undefined ? undefined : Number(values.dpr);
   if (dpr !== undefined && (!Number.isFinite(dpr) || dpr < 1 || dpr > 3)) throw new Error('--dpr must be between 1 and 3.');
+  if (values.scale !== 'css' && values.scale !== 'device') throw new Error('--scale must be css or device.');
   const root = fileURLToPath(new URL('..', import.meta.url));
   const output = resolve(root, values.output);
   const profiles = [
@@ -109,7 +112,7 @@ async function capture() {
           return { renderer: gl.getParameter(gl.RENDERER), source: 'RENDERER' };
         });
         const filename = `${profile.name}.png`;
-        await page.screenshot({ path: resolve(output, filename), timeout: 45_000, animations: 'disabled', scale: 'css' });
+        await page.screenshot({ path: resolve(output, filename), timeout: 45_000, animations: 'disabled', scale: values.scale });
         report.captures.push({ device: profile.name, viewport: profile.options.viewport,
           devicePixelRatio: await page.evaluate(() => window.devicePixelRatio), file: filename, webgl, state, errors });
         await writeFile(resolve(output, 'capture.json'), `${JSON.stringify(report, null, 2)}\n`);

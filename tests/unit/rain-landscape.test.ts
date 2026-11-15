@@ -42,7 +42,9 @@ describe('rain forest refuge', () => {
     geometries.forEach(geometry => geometry.addEventListener('dispose', () => { geometryReleases++; }));
     materials.forEach(material => material.addEventListener('dispose', () => { materialReleases++; }));
     try {
-      expect(triangles).toBeLessThan(700_000);
+      // Mature full crowns and centimetre-scale foreground relief share a
+      // fixed geometry budget; quality switches must not rebuild the world.
+      expect(triangles).toBeLessThan(1_500_000);
       for (const quality of ['low', 'high', 'medium'] as const) scene.setQuality(quality);
       expect(geometryReleases).toBe(0);
       expect(materialReleases).toBe(0);

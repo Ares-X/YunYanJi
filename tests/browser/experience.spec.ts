@@ -22,9 +22,12 @@ test('renders the rainy refuge and supports motion, sound and immersion', async 
   await expect(page.locator('#scene-title')).toHaveText('雨歇之前');
   expect(Number(initial.triangles)).toBeGreaterThan(1000);
   expect(Number(initial.calls)).toBeGreaterThan(1);
-  // Initial rendering also caches all six local fire-shadow cube faces.
-  expect(Number(initial.calls)).toBeLessThan(135);
+  // The initial frame also caches both six-face fire-shadow maps. Opaque
+  // depth is now a separate pass so occlusion only affects indirect light.
+  expect(Number(initial.calls)).toBeLessThan(230);
   expect(initial.contactBakes).toBe(1);
+  expect(initial.opaqueDepth).toBe(true);
+  expect(initial.indirectOcclusion).toBe(true);
   expect(Number(initial.reflectionUpdates)).toBeGreaterThan(0);
   // Capture the frozen first frame before animation can queue software GPU work.
   // Pixel readback on software-only CI has a different budget from UI actions.
@@ -62,7 +65,7 @@ test('renders the rainy refuge and supports motion, sound and immersion', async 
   const moving = await state(page);
   expect(moving.paused).toBe(false);
   // Those static shadow passes must not recur during normal weather playback.
-  expect(Number(moving.calls)).toBeLessThan(80);
+  expect(Number(moving.calls)).toBeLessThan(96);
   let previousViewX = Number(moving.viewX);
   for (const distance of [40, 20]) {
     await page.mouse.move(100, 400);
@@ -128,6 +131,8 @@ test('previews settings, updates procedural rendering and releases resources', a
   const afterQuality = await state(page);
   expect(afterQuality.quality).toBe('low');
   expect(afterQuality.ambientOcclusion).toBe(false);
+  expect(afterQuality.indirectOcclusion).toBe(false);
+  expect(afterQuality.opaqueDepth).toBe(true);
   expect(afterQuality.bloom).toBe(false);
   expect(afterQuality.geometries).toBe(beforeQuality.geometries);
   expect(afterQuality.contactBakes).toBe(beforeQuality.contactBakes);
@@ -146,6 +151,8 @@ test('previews settings, updates procedural rendering and releases resources', a
   const highAgain = await state(page);
   expect(highAgain.quality).toBe('high');
   expect(highAgain.ambientOcclusion).toBe(true);
+  expect(highAgain.indirectOcclusion).toBe(true);
+  expect(highAgain.opaqueDepth).toBe(true);
   expect(highAgain.bloom).toBe(true);
   expect(highAgain.reflectionSize).toBe(512);
   expect(highAgain.geometries).toBe(beforeQuality.geometries);

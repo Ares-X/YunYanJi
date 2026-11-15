@@ -54,6 +54,9 @@ describe('URLs and quality budgets', () => {
   it('caps high-density rendering and keeps explicit quality choices', () => {
     const { width, height } = drawingSize(3840, 2160, 3, 'medium');
     expect(width * height).toBeLessThanOrEqual(1_500_000);
+    expect(drawingSize(3840, 2160, 1, 'high')).toEqual({ width: 3840, height: 2160 });
+    const high = drawingSize(3840, 2160, 3, 'high');
+    expect(high.width * high.height).toBeLessThanOrEqual(8_294_400);
     expect(resolveQuality('auto', 390, true)).toBe('medium');
     expect(resolveQuality('low', 1920, false)).toBe('low');
   });

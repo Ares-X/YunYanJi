@@ -197,7 +197,8 @@ export function buildRainLandscape(seed:string):RainLandscape {
   const group=new Group();group.name='wet-forest-clearing';
   const height=createRainHeight(seed);
   const earth=createEarthMaterial(seed,PUDDLE_LEVEL),stone=createRainMaterial('stone',seed),wood=createRainMaterial('timber',seed);
-  const ground=new Mesh(groundGeometry(height),earth);ground.name='continuous-rain-terrain';ground.receiveShadow=true;group.add(ground);
+  const ground=new Mesh(groundGeometry(height),earth);ground.name='continuous-rain-terrain';ground.receiveShadow=true;
+  ground.userData.yyjContactGround=true;group.add(ground);
   const props=new Group();group.add(props);
   const random=createRandom(`${seed}/clearing-stones`);
   const placements:[number,number,number,number,number][]=[

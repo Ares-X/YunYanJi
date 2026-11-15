@@ -20,9 +20,12 @@
 - `src/ui/`: accessible DOM shell and controls; keep implementation terminology out of the default visitor UI.
 - Share weather state between visual motion and audio. Keep all time progression independent of frame count.
 - Seed every generated scene. Use stable namespace seeds so adding audio randomness does not change the landscape.
-- Runtime-generated needle coverage in `forestNeedles.ts` is allowed: its pixels are algorithmically rasterised, cached by seed and released with their material references. Preserve the required UV channel when batching these meshes. Do not replace this generator with authored image data.
-- Keep a consistent linear HDR and output-conversion path across quality levels. Medium/high GTAO reuses the main depth texture at half linear resolution; low disables AO and MSAA. A restrained HDR bloom may support fire and ember radiance; do not use effects or darkness to conceal geometry problems.
-- The current terrain and trees are static. Directional shadows are cached and invalidated on initial rendering, quality setup and context restoration. If geometry or lighting starts moving, update that invalidation policy. Puddle reflections use simulation time, with an 8 Hz limit only for an unchanged view; camera or scene-cache changes may require an earlier capture.
+- Active foliage comes from `forestGrowth.ts` and `livingForest.ts`; `forestNeedles.ts` remains an archived snow experiment. Runtime-generated bark/soil DataTextures are cached by seed and released with their material references. Preserve their UVs and custom attributes when batching; do not replace generators with authored image data.
+- Keep a consistent linear HDR and output-conversion path across quality levels: separate opaque depth, optional half-resolution GTAO/denoise, PBR beauty, optional HDR bloom, then AgX and sRGB in OutputPass. Apply AO to indirect diffuse/specular light, including a physical material's clearcoat; combine contact and screen estimates without double darkening. Low disables GTAO, bloom and MSAA but retains opaque depth for fire integration. Main-camera depth/AO must not leak into reflection or environment captures.
+- A restrained HDR bloom may support fire and ember radiance; do not use effects or darkness to conceal geometry problems. Ground marked `yyjContactGround` receives the cached contact field but never casts into that field, independently of its ordinary light-shadow flags.
+- `ForestEnvironment` first captures the generated sky, then the illuminated local forest, terrain and shelter. Exclude dynamic flames, particles, firelights and emissive radiance from this static probe. Bake ground contacts before capturing the local environment; reproduce that order on context restoration.
+- High quality caps drawing at 8,294,400 pixels and DPR 2; medium/low retain 1,500,000/850,000 pixels and their smaller DPR limits. A device-scale screenshot does not bypass the renderer's pixel budget.
+- The current terrain and trees are static. Directional and both fire point-light shadows are cached and invalidated on initial rendering, quality setup and context restoration. If geometry or light positions start moving, update that invalidation policy. Puddle reflections use simulation time, with an 8 Hz limit only for an unchanged view; camera or scene-cache changes may require an earlier capture.
 - Dispose GPU/audio resources, event listeners and observers. Handle pause, tab visibility, resize and WebGL context loss.
 - Prefer a small working module over speculative frameworks. A new place should reuse the engine and provide a scene module.
 
@@ -30,7 +33,7 @@
 
 - Run `npm run check` and `npm run test:browser` before handing off changes.
 - Browser checks must include desktop and mobile screenshots, meaningful interaction, asset/network checks and lifecycle behavior. Inspect actual renders, not only DOM text.
-- Use `npm run capture` locally for visual iterations; do not push commits merely to obtain CI screenshots. Finish a coherent batch locally, then push it for the final quality gate.
+- Use `npm run capture` locally for visual iterations; do not push commits merely to obtain CI screenshots. The default is CSS-scale output; add `--dpr 2 --scale device` to inspect full device pixels and compare the report's actual drawing dimensions. Finish a coherent batch locally, then push it for the final quality gate.
 - Draft PRs skip CI browser checks; ready PRs retain them. A local screenshot command is not a replacement for the complete browser tests before handoff.
 - Performance claims must name hardware/browser and whether the renderer is software-backed. A software-rendered CI run cannot establish real device FPS.
 - Keep screenshots/test traces out of shipped assets. Do not commit `dist` or generated media into the source tree.

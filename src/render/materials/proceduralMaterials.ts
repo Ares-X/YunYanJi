@@ -29,6 +29,8 @@ export function setContactShadowField(material: Material, texture: Texture, boun
         .replace('#include <common>',`#include <common>
           varying vec3 vYyjContactPosition;
           attribute float aYyjContactReceiver;
+          attribute float aYyjTerrainHeight;
+          varying float vYyjTerrainHeight;
           varying float vYyjContactReceiver;`)
         .replace('#include <worldpos_vertex>',`#include <worldpos_vertex>
           vec4 yyjContactWorld=vec4(transformed,1.0);
@@ -39,24 +41,29 @@ export function setContactShadowField(material: Material, texture: Texture, boun
             yyjContactWorld=batchingMatrix*yyjContactWorld;
           #endif
           vYyjContactPosition=(modelMatrix*yyjContactWorld).xyz;
+          vYyjTerrainHeight=aYyjTerrainHeight;
           vYyjContactReceiver=aYyjContactReceiver;`);
       shader.fragmentShader=shader.fragmentShader
         .replace('#include <common>',`#include <common>
           uniform sampler2D uYyjContactMap;
           uniform vec4 uYyjContactBounds;
           varying vec3 vYyjContactPosition;
+          varying float vYyjTerrainHeight;
           varying float vYyjContactReceiver;`)
         .replace('#include <aomap_fragment>',`#include <aomap_fragment>
           vec2 yyjContactUv=(vYyjContactPosition.xz-uYyjContactBounds.xy)/uYyjContactBounds.zw;
           float yyjInside=step(0.0,yyjContactUv.x)*step(yyjContactUv.x,1.0)
             *step(0.0,yyjContactUv.y)*step(yyjContactUv.y,1.0);
-          float yyjGround=1.0-smoothstep(.10,.85,vYyjContactPosition.y);
+          float yyjGround=1.0-smoothstep(.10,.85,vYyjContactPosition.y-vYyjTerrainHeight);
           float yyjAmbient=1.0-texture2D(uYyjContactMap,clamp(yyjContactUv,0.0,1.0)).r
             *yyjInside*yyjGround*vYyjContactReceiver*.34;
           reflectedLight.indirectDiffuse*=yyjAmbient;
-          reflectedLight.indirectSpecular*=yyjAmbient;`);
+          reflectedLight.indirectSpecular*=yyjAmbient;
+          #ifdef USE_CLEARCOAT
+            clearcoatSpecularIndirect*=yyjAmbient;
+          #endif`);
     };
-    material.customProgramCacheKey=()=> `${key}/ground-contact-v1`;
+    material.customProgramCacheKey=()=> `${key}/ground-contact-v3`;
     material.needsUpdate=true;
   }
   if (!binding) return;
