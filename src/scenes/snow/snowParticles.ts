@@ -18,6 +18,7 @@ const VERTEX_SHADER = /* glsl */ `
   attribute float aSpeed;
   varying float vOpacity;
   varying float vPhase;
+  varying float vNear;
   #include <fog_pars_vertex>
   void main() {
     vec3 p = position;
@@ -28,9 +29,13 @@ const VERTEX_SHADER = /* glsl */ `
     vec4 mvPosition = modelViewMatrix * vec4(p, 1.0);
     gl_Position = projectionMatrix * mvPosition;
     float projectedSize = aSize * 0.5 * uViewportHeight * projectionMatrix[1][1] / max(0.2, -mvPosition.z);
-    gl_PointSize = clamp(projectedSize, uPixelRatio, 15.0 * uPixelRatio);
-    vOpacity = smoothstep(0.02, 0.42, p.y) * smoothstep(0.4, 2.2, -mvPosition.z);
+    gl_PointSize = clamp(projectedSize, uPixelRatio, 18.0 * uPixelRatio);
+    vOpacity = smoothstep(0.02, 0.42, p.y) * smoothstep(0.35, 1.25, -mvPosition.z)
+      * min(1.0, projectedSize / max(1.0, uPixelRatio));
+    // The gallery roof shelters the indoor gathering from falling snow.
+    if (p.x > -9.1 && p.x < -4.8 && p.z > -7.1 && p.z < 0.65 && p.y < 3.4) vOpacity = 0.0;
     vPhase = aPhase;
+    vNear = 1.0 - smoothstep(0.8, 4.2, -mvPosition.z);
     #include <fog_vertex>
   }
 `;
@@ -39,15 +44,19 @@ const FRAGMENT_SHADER = /* glsl */ `
   uniform float uIntensity;
   varying float vOpacity;
   varying float vPhase;
+  varying float vNear;
   #include <fog_pars_fragment>
   void main() {
     vec2 p = gl_PointCoord - 0.5;
     float c = cos(vPhase), s = sin(vPhase);
     p = mat2(c, -s, s, c) * p;
     p.x *= 0.83 + 0.14 * sin(vPhase);
-    float edge = 1.0 - smoothstep(0.18, 0.49, length(p));
+    float radius = length(p);
+    float angle = atan(p.y, p.x);
+    float uneven = 1.0 + sin(angle * 5.0 + vPhase) * 0.06;
+    float edge = 1.0 - smoothstep(mix(0.13, 0.02, vNear), 0.49, radius * uneven);
     if (edge < 0.015) discard;
-    gl_FragColor = vec4(vec3(0.86, 0.91, 0.94), edge * vOpacity * 0.8 * uIntensity);
+    gl_FragColor = vec4(vec3(0.89, 0.93, 0.96), edge * vOpacity * mix(0.72, 0.48, vNear) * uIntensity);
     #include <tonemapping_fragment>
     #include <colorspace_fragment>
     #include <fog_fragment>
@@ -73,7 +82,7 @@ export class SnowParticles {
       positions[i * 3 + 1] = randomBetween(random, 0, 14);
       positions[i * 3 + 2] = randomBetween(random, -18, 18);
       phase[i] = random() * Math.PI * 2;
-      size[i] = randomBetween(random, 0.027, 0.074);
+      size[i] = random() < 0.055 ? randomBetween(random, 0.038, 0.065) : randomBetween(random, 0.009, 0.028);
       speed[i] = randomBetween(random, 0.55, 1.22);
     }
     const geometry = new BufferGeometry();

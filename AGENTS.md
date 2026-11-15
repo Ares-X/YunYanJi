@@ -7,6 +7,7 @@
 - Geometry, analytical shaders, seeded noise, runtime-generated CanvasTexture/DataTexture/render targets, procedural environment maps and generated Web Audio PCM are allowed. GPU textures are runtime data, not authored assets. Generate/cache them once where possible; do not regenerate them per frame.
 - Use system fonts and native DOM/CSS for UI. No third-party fonts or remote runtime asset dependencies.
 - Preserve the original poem's imagery, season and context. The first scene depicts SNOW compared to willow catkins, not literal spring catkins in winter.
+- The planned collection has four themes: wind, flowers, snow, and moon, initially three distinct scenes per theme. Current priority is to polish the first snow courtyard before expanding the playable catalogue. See docs/art-direction.md for candidate scenes and visual acceptance criteria.
 - State clearly whether a scene is a technical foundation or has passed human visual/audio acceptance. Never claim photorealism based on a build passing.
 
 ## Architecture

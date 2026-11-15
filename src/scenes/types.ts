@@ -8,6 +8,9 @@ export interface PoemScene {
   /** Optional composition authored for narrow screens, in scene world units. */
   readonly portraitCameraPosition?: Vector3;
   readonly portraitCameraTarget?: Vector3;
+  /** Refresh scene-owned generated render caches after context restoration. */
+  invalidateRenderCaches?(): void;
+  diagnostics?(): Record<string, number>;
   update(frame: EnvironmentSnapshot): void;
   setQuality(quality: QualityLevel): void;
   dispose(): void;

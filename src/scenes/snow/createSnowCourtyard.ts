@@ -13,33 +13,41 @@ export function createSnowCourtyard(options: SceneOptions): PoemScene {
     snow: createProceduralMaterial('snow', options.seed),
     stone: createProceduralMaterial('stone', options.seed),
     wood: createProceduralMaterial('wood', options.seed),
+    bark: createProceduralMaterial('bark', options.seed),
     plaster: createProceduralMaterial('plaster', options.seed),
     tile: createProceduralMaterial('tile', options.seed),
   };
-  const courtyard = buildCourtyard(options.seed, materials);
+  const courtyard = buildCourtyard(options.seed, materials, options.quality);
   const snow = new SnowParticles(options.seed, options.quality);
   group.add(courtyard.group, snow.points);
   let disposed = false;
 
   return {
     group,
-    cameraPosition: new Vector3(8.8, 2.25, 12.0),
-    cameraTarget: new Vector3(-0.3, 1.8, -3.7),
-    portraitCameraPosition: new Vector3(8.8, 2.25, 15.8),
-    portraitCameraTarget: new Vector3(1.5, 1.65, -6.2),
+    cameraPosition: new Vector3(7.8, 2.65, 12.2),
+    cameraTarget: new Vector3(-0.4, 1.65, -4.2),
+    portraitCameraPosition: new Vector3(-4, 2.7, 20.5),
+    portraitCameraTarget: new Vector3(-1.4, 2.8, -5),
+    invalidateRenderCaches(): void { courtyard.pond.invalidate(); },
+    diagnostics: () => ({
+      reflectionUpdates: Number(courtyard.pond.mesh.userData.reflectionUpdates),
+      reflectionSize: Number(courtyard.pond.mesh.userData.reflectionSize),
+    }),
     update(frame: EnvironmentSnapshot): void {
       if (disposed) return;
       snow.update(frame);
+      courtyard.pond.update(frame);
       courtyard.tree.rotation.z = frame.reducedMotion ? 0 : -frame.wind.x * 0.0015;
       courtyard.tree.rotation.x = frame.reducedMotion ? 0 : frame.wind.z * 0.0015;
     },
     setQuality(quality: QualityLevel): void {
-      if (!disposed) snow.setQuality(quality);
+      if (!disposed) { snow.setQuality(quality); courtyard.pond.setQuality(quality); }
     },
     dispose(): void {
       if (disposed) return;
       disposed = true;
       snow.dispose();
+      courtyard.pond.disposeTargets();
       const geometries = new Set<BufferGeometry>();
       const ownedMaterials = new Set<Material>();
       courtyard.group.traverse((object) => {

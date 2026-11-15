@@ -26,6 +26,7 @@ async function start(): Promise<() => void> {
   let prepared = false;
   let world: WorldRenderer | undefined;
   let raf = 0;
+  let stillRaf = 0;
   let lastTime = 0;
   let frameCount = 0;
   let lastFrameMs = 0;
@@ -36,6 +37,14 @@ async function start(): Promise<() => void> {
 
   const renderStill = () => {
     if (world && prepared && !contextLost && !disposed) world.render(weather.snapshot());
+  };
+
+  // A settings/resize event should update state immediately without compiling a
+  // new shader variant inside the input handler. Merge static redraws into the
+  // next frame; the active animation loop already covers an unpaused scene.
+  const scheduleStill = () => {
+    if (!prepared || contextLost || disposed || stillRaf || (!suspended() && raf)) return;
+    stillRaf = requestAnimationFrame(() => { stillRaf = 0; renderStill(); });
   };
 
   const frame = (now: number) => {
@@ -54,7 +63,9 @@ async function start(): Promise<() => void> {
 
   const syncPlayback = () => {
     cancelAnimationFrame(raf);
+    cancelAnimationFrame(stillRaf);
     raf = 0;
+    stillRaf = 0;
     lastTime = 0;
     void audio.setSuspended(audioSuspended()).catch(() => ui.notify('声音暂时中断，可重新开启。'));
     ui.setPaused(manualPause);
@@ -85,7 +96,7 @@ async function start(): Promise<() => void> {
       }
     },
     setVolume: (value) => audio.setVolume(value),
-    setSnow: (value) => { weather.setSnowIntensity(value); renderStill(); },
+    setSnow: (value) => { weather.setSnowIntensity(value); scheduleStill(); },
     setQuality: (value) => { quality = value; resize(); },
     reset: () => { weather.reset(); world?.resetView(); renderStill(); ui.notify('回到初见时。'); },
     share: async () => {
@@ -104,7 +115,7 @@ async function start(): Promise<() => void> {
     const bounds = root.getBoundingClientRect();
     world.setQuality(resolveQuality(quality, bounds.width, coarsePointer.matches));
     world.resize(bounds.width, bounds.height);
-    renderStill();
+    scheduleStill();
   };
 
   const resizeObserver = new ResizeObserver(resize);
@@ -159,9 +170,11 @@ async function start(): Promise<() => void> {
     restoring = true;
     void (async () => {
       try {
-        // Three.js' own restoration listener is registered by the renderer later.
-        // Wait until all listeners have run before regenerating render targets.
-        await Promise.resolve();
+        // This listener precedes Three.js' restoration listener. Native event
+        // callbacks can have a microtask checkpoint between them, so a resolved
+        // Promise is too early: Three would discard our newly rendered targets.
+        // A new task guarantees its GL caches are ready before regenerating them.
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
         if (disposed) return;
         world?.rebuildEnvironment();
         await world?.prepare();
@@ -181,6 +194,7 @@ async function start(): Promise<() => void> {
     if (disposed) return;
     disposed = true;
     cancelAnimationFrame(raf);
+    cancelAnimationFrame(stillRaf);
     events.abort();
     resizeObserver.disconnect();
     ui.dispose();

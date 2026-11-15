@@ -13,9 +13,9 @@ import { drawingSize, QUALITY } from './quality';
 export class WorldRenderer {
   readonly renderer: WebGLRenderer;
   readonly scene = new Scene();
-  readonly camera = new PerspectiveCamera(40, 1, 0.2, 120);
+  readonly camera = new PerspectiveCamera(40, 1, 0.2, 220);
   private readonly sky = createProceduralSky();
-  private readonly sun = new DirectionalLight('#fff0dd', 1.9);
+  private readonly sun = new DirectionalLight('#ffe5c3', 1.35);
   private readonly contacts = new GroundContactShadows();
   private environment: WebGLCubeRenderTarget | undefined;
   private quality: QualityLevel;
@@ -30,18 +30,21 @@ export class WorldRenderer {
     this.renderer = new WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance', alpha: false });
     this.renderer.outputColorSpace = SRGBColorSpace;
     this.renderer.toneMapping = ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.03;
+    this.renderer.toneMappingExposure = 1.08;
+    // Count nested reflection passes as part of the complete visible frame.
+    this.renderer.info.autoReset = false;
     this.renderer.shadowMap.type = PCFShadowMap;
-    this.scene.background = new Color('#b7c5cc');
-    this.scene.fog = new FogExp2('#b7c5cc', 0.022);
-    this.scene.environmentIntensity = 0.62;
-    this.scene.add(new HemisphereLight('#d7e8f2', '#667771', 0.9));
-    this.sun.position.set(-8, 15, 7);
-    this.sun.target.position.set(0, 0, -2);
-    Object.assign(this.sun.shadow.camera, { left: -17, right: 17, top: 17, bottom: -17, near: 0.5, far: 55 });
+    this.scene.background = new Color('#c6d1d4');
+    this.scene.fog = new FogExp2('#c6d1d4', 0.018);
+    this.scene.environmentIntensity = 0.78;
+    this.scene.add(new HemisphereLight('#d1e4f1', '#6b7779', 0.35));
+    this.sun.position.set(-7, 11, 4);
+    this.sun.target.position.set(-1, 0, -3);
+    Object.assign(this.sun.shadow.camera, { left: -13, right: 13, top: 13, bottom: -13, near: 0.5, far: 48 });
     this.sun.shadow.bias = -0.00025;
-    this.sun.shadow.normalBias = 0.035;
-    this.sun.shadow.radius = 3;
+    this.sun.shadow.normalBias = 0.018;
+    this.sun.shadow.radius = 4.5;
+    this.sun.shadow.intensity = 0.82;
     this.scene.add(this.sun, this.sun.target, poem.group);
     this.camera.position.copy(poem.cameraPosition);
     this.lookAt.copy(poem.cameraTarget);
@@ -57,10 +60,11 @@ export class WorldRenderer {
     skyScene.add(this.sky.mesh);
     const generator = new PMREMGenerator(this.renderer);
     this.environment?.dispose();
-    this.environment = generator.fromScene(skyScene, 0.08, 0.1, 100, { size: 256 });
+    this.environment = generator.fromScene(skyScene, 0.08, 0.1, 240, { size: 256 });
     this.scene.environment = this.environment.texture;
     generator.dispose();
     this.scene.add(this.sky.mesh);
+    this.poem.invalidateRenderCaches?.();
     this.contacts.bake(this.renderer, this.scene);
   }
 
@@ -109,6 +113,7 @@ export class WorldRenderer {
     this.camera.lookAt(this.lookAt);
     this.sky.update(frame.elapsed);
     this.poem.update(frame);
+    this.renderer.info.reset();
     this.renderer.render(this.scene, this.camera);
   }
 
@@ -116,7 +121,7 @@ export class WorldRenderer {
     return { quality: this.quality, viewX: this.goal.x, viewY: this.goal.y, calls: this.renderer.info.render.calls, triangles: this.renderer.info.render.triangles,
       geometries: this.renderer.info.memory.geometries, textures: this.renderer.info.memory.textures,
       contactBakes: this.contacts.bakes, contactResolution: this.contacts.resolution,
-      drawingWidth: this.canvas.width, drawingHeight: this.canvas.height };
+      drawingWidth: this.canvas.width, drawingHeight: this.canvas.height, ...this.poem.diagnostics?.() };
   }
 
   dispose(): void {

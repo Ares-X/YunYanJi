@@ -1,5 +1,5 @@
 import {
-  Color, DoubleSide, Mesh, OrthographicCamera, PlaneGeometry, Scene,
+  Color, DoubleSide, Float32BufferAttribute, Mesh, OrthographicCamera, PlaneGeometry, Scene,
   ShaderMaterial, Vector2, Vector4, WebGLRenderTarget,
 } from 'three';
 import type { Material, Object3D, WebGLRenderer } from 'three';
@@ -96,6 +96,20 @@ export class GroundContactShadows {
       if (object instanceof Mesh) {
         const entries = Array.isArray(object.material) ? object.material : [object.material];
         entries.forEach((material) => materials.add(material));
+        // This is a field projected onto the ground, not general-purpose AO.
+        // Letting a caster sample its own underside darkens a step's snow cap.
+        // Static batches already preserve cast/receive flags, so one constant
+        // vertex weight is sufficient and survives material sharing correctly.
+        const weight = Number(!object.castShadow && object.receiveShadow);
+        const count = object.geometry.getAttribute('position')?.count ?? 0;
+        const current = object.geometry.getAttribute('aYyjContactReceiver');
+        if (!current || current.count !== count || current.itemSize !== 1) {
+          object.geometry.setAttribute('aYyjContactReceiver',
+            new Float32BufferAttribute(new Float32Array(count).fill(weight), 1));
+        } else if (count > 0 && current.getX(0) !== weight) {
+          for (let i = 0; i < count; i += 1) current.setX(i, weight);
+          current.needsUpdate = true;
+        }
       }
       // The ground cannot occlude itself; particles and the sky are not casters.
       if (object.visible && ('isPoints' in object || (object instanceof Mesh && !object.castShadow))) {

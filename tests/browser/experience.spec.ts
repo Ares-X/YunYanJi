@@ -19,13 +19,16 @@ test('renders a procedural scene, supports interaction and releases its resource
   expect(Number((await state(page)).calls)).toBeGreaterThan(1);
   expect(Number((await state(page)).calls)).toBeLessThan(80);
   expect((await state(page)).contactBakes).toBe(1);
+  expect(Number((await state(page)).reflectionUpdates)).toBeGreaterThan(0);
   await page.getByRole('button', { name: '暂停', exact: true }).click();
   const frozen = (await state(page)).elapsed;
   await page.waitForTimeout(250);
   expect((await state(page)).elapsed).toBe(frozen);
+  const pausedReflection = (await state(page)).reflectionUpdates;
   // Pixel readback on software-only CI has a different budget from UI actions.
   await page.screenshot({ path: testInfo.outputPath('courtyard.png'), timeout: 45_000, animations: 'disabled', scale: 'css' });
   await testInfo.attach('courtyard', { path: testInfo.outputPath('courtyard.png'), contentType: 'image/png' });
+  expect((await state(page)).reflectionUpdates).toBe(pausedReflection);
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
   expect(overflow).toBe(false);
   await expect(page.locator('#hint')).toHaveText('已暂停，点继续或起风');
@@ -72,6 +75,10 @@ test('renders a procedural scene, supports interaction and releases its resource
   expect((await state(page)).quality).toBe('low');
   expect((await state(page)).geometries).toBe(beforeQuality.geometries);
   expect((await state(page)).contactBakes).toBe(beforeQuality.contactBakes);
+  expect((await state(page)).reflectionSize).toBe(256);
+  // A quality change schedules its static redraw on the next animation frame.
+  await expect.poll(async () => Number((await state(page)).reflectionUpdates))
+    .toBeGreaterThan(Number(beforeQuality.reflectionUpdates));
   await page.getByLabel('雪量', { exact: true }).press('Home');
   // Two native keyboard increments exercise the control without queuing twenty
   // redundant WebGL redraws on a software-only runner.
@@ -93,6 +100,7 @@ test('renders a procedural scene, supports interaction and releases its resource
   await expect.poll(async () => (await state(page)).audioContext).toBe('closed');
   expect((await state(page)).disposed).toBe(true);
   expect((await state(page)).geometries).toBe(0);
+  expect((await state(page)).textures).toBe(0);
 });
 
 test('starts still for reduced motion and recovers from WebGL context loss', async ({ page }, testInfo) => {
@@ -104,7 +112,14 @@ test('starts still for reduced motion and recovers from WebGL context loss', asy
   await expect(page.locator('#app')).toHaveAttribute('data-ready', 'true');
   expect((await state(page)).paused).toBe(true);
   expect((await state(page)).elapsed).toBe(0);
+  await page.evaluate(async () => { await document.fonts.ready; });
+  await expect.poll(async () => Number((await state(page)).reflectionUpdates)).toBeGreaterThan(0);
+  const before = await page.screenshot({
+    path: testInfo.outputPath('before-restoration.png'), timeout: 45_000, animations: 'disabled', scale: 'css',
+  });
+  await testInfo.attach('before-restoration', { path: testInfo.outputPath('before-restoration.png'), contentType: 'image/png' });
   const contactBakes = Number((await state(page)).contactBakes);
+  const reflectionUpdates = Number((await state(page)).reflectionUpdates);
   const supported = await page.evaluate(() => {
     const gl = document.querySelector('canvas')!.getContext('webgl2');
     const extension = gl?.getExtension('WEBGL_lose_context');
@@ -118,7 +133,51 @@ test('starts still for reduced motion and recovers from WebGL context loss', asy
   expect((await state(page)).contextLost).toBe(false);
   expect((await state(page)).paused).toBe(true);
   expect(Number((await state(page)).contactBakes)).toBe(contactBakes + 1);
-  await page.screenshot({ path: testInfo.outputPath('restored.png'), timeout: 45_000, animations: 'disabled', scale: 'css' });
+  expect(Number((await state(page)).reflectionUpdates)).toBeGreaterThan(reflectionUpdates);
+  const restored = await page.screenshot({ path: testInfo.outputPath('restored.png'), timeout: 45_000, animations: 'disabled', scale: 'css' });
   await testInfo.attach('restored', { path: testInfo.outputPath('restored.png'), contentType: 'image/png' });
+  // Compare runtime captures of the same frozen scene. The central region omits
+  // the recovery notification but includes the courtyard's indirect lighting.
+  const difference = await page.evaluate(async ({ beforePng, restoredPng }) => {
+    const decode = async (encoded: string) => {
+      const bytes = Uint8Array.from(atob(encoded), (character) => character.charCodeAt(0));
+      return createImageBitmap(new Blob([bytes], { type: 'image/png' }));
+    };
+    const [initialImage, restoredImage] = await Promise.all([decode(beforePng), decode(restoredPng)]);
+    try {
+      if (initialImage.width !== restoredImage.width || initialImage.height !== restoredImage.height) {
+        throw new Error('Context restoration changed screenshot dimensions');
+      }
+      const x = Math.floor(initialImage.width * 0.1);
+      const y = Math.floor(initialImage.height * 0.35);
+      const width = Math.floor(initialImage.width * 0.9) - x;
+      const height = Math.floor(initialImage.height * 0.7) - y;
+      const pixels = (bitmap: ImageBitmap) => {
+        const canvas = new OffscreenCanvas(width, height);
+        const context = canvas.getContext('2d')!;
+        context.drawImage(bitmap, x, y, width, height, 0, 0, width, height);
+        return context.getImageData(0, 0, width, height).data;
+      };
+      const initialPixels = pixels(initialImage);
+      const restoredPixels = pixels(restoredImage);
+      let absoluteRgbDifference = 0;
+      for (let pixel = 0; pixel < initialPixels.length; pixel += 4) {
+        for (let channel = 0; channel < 3; channel++) {
+          absoluteRgbDifference += Math.abs(initialPixels[pixel + channel]! - restoredPixels[pixel + channel]!);
+        }
+      }
+      return {
+        meanAbsoluteRgbDifference: absoluteRgbDifference / (width * height * 3),
+        region: { x, y, width, height },
+      };
+    } finally {
+      initialImage.close();
+      restoredImage.close();
+    }
+  }, { beforePng: before.toString('base64'), restoredPng: restored.toString('base64') });
+  await testInfo.attach('restoration-image-difference', {
+    body: JSON.stringify(difference, null, 2), contentType: 'application/json',
+  });
+  expect(difference.meanAbsoluteRgbDifference, 'Context restoration must preserve the frozen scene lighting').toBeLessThan(2);
   expect(errors).toEqual([]);
 });
