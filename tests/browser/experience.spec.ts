@@ -11,20 +11,19 @@ test('renders a procedural scene, supports interaction and releases its resource
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
   page.on('request', (request) => requests.push({ url: request.url(), type: request.resourceType() }));
+  await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.goto('/?debug=1&seed=qa-snow');
   await expect(page.locator('#app')).toHaveAttribute('data-ready', 'true');
-  await expect.poll(async () => Number((await state(page)).frames)).toBeGreaterThan(2);
+  expect((await state(page)).paused).toBe(true);
+  expect((await state(page)).elapsed).toBe(0);
   expect((await state(page)).audioContext).toBe('uninitialized');
   expect(Number((await state(page)).triangles)).toBeGreaterThan(1000);
   expect(Number((await state(page)).calls)).toBeGreaterThan(1);
   expect(Number((await state(page)).calls)).toBeLessThan(80);
   expect((await state(page)).contactBakes).toBe(1);
   expect(Number((await state(page)).reflectionUpdates)).toBeGreaterThan(0);
-  await page.getByRole('button', { name: '暂停', exact: true }).click();
-  const frozen = (await state(page)).elapsed;
-  await page.waitForTimeout(250);
-  expect((await state(page)).elapsed).toBe(frozen);
   const pausedReflection = (await state(page)).reflectionUpdates;
+  // Capture the frozen first frame before animation can queue software GPU work.
   // Pixel readback on software-only CI has a different budget from UI actions.
   await page.screenshot({ path: testInfo.outputPath('courtyard.png'), timeout: 45_000, animations: 'disabled', scale: 'css' });
   await testInfo.attach('courtyard', { path: testInfo.outputPath('courtyard.png'), contentType: 'image/png' });
@@ -42,9 +41,11 @@ test('renders a procedural scene, supports interaction and releases its resource
     expect(box!.y + box!.height).toBeLessThanOrEqual(viewport.height);
   }
 
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
   await page.getByRole('button', { name: '起风', exact: true }).click();
   await expect.poll(async () => Number((await state(page)).gust)).toBeGreaterThan(0.005);
   expect((await state(page)).paused).toBe(false);
+  await expect.poll(async () => Number((await state(page)).frames)).toBeGreaterThan(2);
   for (const distance of [40, 20]) {
     const before = Number((await state(page)).viewX);
     await page.mouse.move(100, 400);
@@ -57,6 +58,9 @@ test('renders a procedural scene, supports interaction and releases its resource
   await expect.poll(async () => (await state(page)).audioState).toBe('playing');
   await page.getByRole('button', { name: '暂停', exact: true }).click();
   await expect.poll(async () => (await state(page)).audioContext).toBe('suspended');
+  const frozen = (await state(page)).elapsed;
+  await page.waitForTimeout(250);
+  expect((await state(page)).elapsed).toBe(frozen);
   await page.getByRole('button', { name: '继续', exact: true }).click();
   await expect.poll(async () => (await state(page)).audioState).toBe('playing');
 
