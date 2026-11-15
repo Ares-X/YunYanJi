@@ -5,6 +5,9 @@ export interface PoemScene {
   readonly group: Group;
   readonly cameraPosition: Vector3;
   readonly cameraTarget: Vector3;
+  /** Optional composition authored for narrow screens, in scene world units. */
+  readonly portraitCameraPosition?: Vector3;
+  readonly portraitCameraTarget?: Vector3;
   update(frame: EnvironmentSnapshot): void;
   setQuality(quality: QualityLevel): void;
   dispose(): void;

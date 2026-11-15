@@ -67,7 +67,7 @@ export class WorldRenderer {
     const size = drawingSize(this.width, this.height, dpr, this.quality);
     this.renderer.setSize(size.width, size.height, false);
     this.camera.aspect = this.width / this.height;
-    // Portrait keeps the authored courtyard in view instead of cropping its centre.
+    // Narrow screens can use an individual scene's authored portrait composition.
     this.camera.fov = this.camera.aspect < 0.8 ? 55 : 40;
     this.camera.updateProjectionMatrix();
   }
@@ -98,10 +98,12 @@ export class WorldRenderer {
   render(frame: EnvironmentSnapshot): void {
     const ease = frame.reducedMotion ? 1 : 1 - Math.exp(-Math.max(frame.delta, 0.016) * 4);
     this.offset.lerp(this.goal, ease);
-    this.camera.position.copy(this.poem.cameraPosition);
+    const portrait = this.camera.aspect < 0.8;
+    this.camera.position.copy(portrait ? this.poem.portraitCameraPosition ?? this.poem.cameraPosition : this.poem.cameraPosition);
     this.camera.position.x += this.offset.x * 1.3;
     this.camera.position.y += this.offset.y * 0.45;
-    this.camera.lookAt(this.poem.cameraTarget);
+    this.lookAt.copy(portrait ? this.poem.portraitCameraTarget ?? this.poem.cameraTarget : this.poem.cameraTarget);
+    this.camera.lookAt(this.lookAt);
     this.sky.update(frame.elapsed);
     this.poem.update(frame);
     this.renderer.render(this.scene, this.camera);

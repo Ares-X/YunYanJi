@@ -25,6 +25,8 @@ export function createSnowCourtyard(options: SceneOptions): PoemScene {
     group,
     cameraPosition: new Vector3(8.8, 2.25, 12.0),
     cameraTarget: new Vector3(-0.3, 1.8, -3.7),
+    portraitCameraPosition: new Vector3(8.8, 2.25, 15.8),
+    portraitCameraTarget: new Vector3(1.5, 1.65, -6.2),
     update(frame: EnvironmentSnapshot): void {
       if (disposed) return;
       snow.update(frame);
