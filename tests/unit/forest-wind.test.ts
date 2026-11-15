@@ -42,6 +42,21 @@ describe('forest wind and canopy', () => {
       expect(wind.uniforms.uForestTime.value).toBe(8);
       expect(wind.uniforms.uForestWind.value.toArray()).toEqual(previous);
       expect(wind.uniforms.uForestWind.value).toBe(handle);
+      wind.setEnvironmentCapture(true);
+      expect(wind.uniforms.uForestTime.value).toBe(0);
+      expect(wind.uniforms.uForestWind.value.toArray()).toEqual([0, 0, 0]);
+      expect(wind.uniforms.uForestWind.value).toBe(handle);
+      // Repeated setup and simulation updates cannot move a static probe or
+      // overwrite the visible pose that must resume after its capture.
+      wind.setEnvironmentCapture(true);
+      wind.update(frame(9));
+      expect(wind.uniforms.uForestTime.value).toBe(0);
+      expect(wind.uniforms.uForestWind.value.toArray()).toEqual([0, 0, 0]);
+      wind.setEnvironmentCapture(false);
+      wind.setEnvironmentCapture(false);
+      expect(wind.uniforms.uForestTime.value).toBe(8);
+      expect(wind.uniforms.uForestWind.value.toArray()).toEqual(previous);
+      expect(wind.uniforms.uForestWind.value).toBe(handle);
       wind.update(frame(2));
       expect(wind.uniforms.uForestTime.value).toBe(2);
       wind.update(frame(2, true));
@@ -63,6 +78,9 @@ describe('forest wind and canopy', () => {
         const mesh = object as Mesh;
         materials.add(mesh.material as Material);
         const positions = mesh.geometry.getAttribute('position');
+        expect(mesh.geometry.getAttribute('aForestRootHeight').count).toBe(positions.count);
+        expect(mesh.geometry.getAttribute('aForestIdentity').count).toBe(positions.count);
+        expect(mesh.geometry.getAttribute('uv').count).toBe(positions.count);
         const windRoots = mesh.geometry.getAttribute('aForestWindRoot');
         const anchors = mesh.geometry.getAttribute('aForestWindAnchor');
         expect(windRoots.count).toBe(positions.count);
@@ -81,7 +99,9 @@ describe('forest wind and canopy', () => {
       }
       expect(roots).toBeGreaterThan(0);
       expect(leaves).toBeGreaterThan(20_000);
-      expect(triangles).toBeLessThan(500_000);
+      // The upstream space-colonized full crowns use 892,944 triangles for
+      // this seed before wind. Preserve them within the new scene's 1.5 M cap.
+      expect(triangles).toBeLessThan(1_000_000);
       expect(forest.group.userData.forest.fireShadowTriangles)
         .toBeLessThan(forest.group.userData.forest.shadowTriangles);
     } finally {
@@ -89,5 +109,7 @@ describe('forest wind and canopy', () => {
       forest.group.traverse(object => { if (object instanceof Mesh) object.geometry.dispose(); });
       materials.forEach(material => material.dispose());
     }
-  });
+    // Full procedural crowns are CPU-generated; this is a structural/resource
+    // check, not a five-second startup performance claim under parallel tests.
+  }, 15_000);
 });

@@ -58,6 +58,9 @@ export function createForestWind() {
   const installed = new WeakSet<Material>();
   const depth = new MeshDepthMaterial({ depthPacking: RGBADepthPacking, side: DoubleSide });
   const distance = new MeshDistanceMaterial({ side: DoubleSide });
+  const capturedWind = new Vector3();
+  let capturedTime = 0;
+  let capturing = false;
   let disposed = false;
   function install(material: Material): void {
     if (installed.has(material)) return;
@@ -89,7 +92,7 @@ export function createForestWind() {
       mesh.geometry.boundingBox!.expandByScalar(1.3);
     },
     update(frame: EnvironmentSnapshot): void {
-      if (disposed) return;
+      if (disposed || capturing) return;
       // Absolute simulation time, never wall time or accumulated frame delta.
       uniforms.uForestTime.value = frame.elapsed;
       uniforms.uForestWind.value.set(
@@ -97,6 +100,21 @@ export function createForestWind() {
         frame.reducedMotion ? 0 : Math.max(0, Math.min(1, frame.wind.strength)),
         Math.max(-3, Math.min(3, frame.wind.z)),
       );
+    },
+    setEnvironmentCapture(enabled: boolean): void {
+      if (disposed || capturing === enabled) return;
+      capturing = enabled;
+      if (enabled) {
+        capturedTime = uniforms.uForestTime.value;
+        capturedWind.copy(uniforms.uForestWind.value);
+        // Static probes always see the same rest pose, including after a
+        // context restore at a different point in the simulation timeline.
+        uniforms.uForestTime.value = 0;
+        uniforms.uForestWind.value.set(0, 0, 0);
+      } else {
+        uniforms.uForestTime.value = capturedTime;
+        uniforms.uForestWind.value.copy(capturedWind);
+      }
     },
     dispose(): void {
       if (disposed) return;

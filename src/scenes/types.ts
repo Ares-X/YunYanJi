@@ -1,5 +1,6 @@
 import type { Group, PointLight, Vector3 } from 'three';
 import type { EnvironmentSnapshot, QualityLevel } from '../core/types';
+import type { SceneDepthField } from '../render/SurfaceOcclusion';
 
 export interface LandscapeScene {
   readonly group: Group;
@@ -7,10 +8,17 @@ export interface LandscapeScene {
   readonly cameraTarget: Vector3;
   /** The same radiance source lights surfaces, smoke and the surrounding mist. */
   readonly fireLight?: PointLight;
+  readonly fireLights?: readonly PointLight[];
   readonly movingCanopy?: boolean;
+  /** Freeze procedural deformation while capturing static local illumination. */
+  setEnvironmentCapture?(enabled: boolean): void;
   /** Optional composition authored for narrow screens, in scene world units. */
   readonly portraitCameraPosition?: Vector3;
   readonly portraitCameraTarget?: Vector3;
+  /** The actual ground beneath static geometry, used by local light occlusion. */
+  readonly groundHeightAt?: (x: number, z: number) => number;
+  /** Renderer-owned opaque depth, valid only for the main view. */
+  setSceneDepth?(field: SceneDepthField): void;
   /** Refresh scene-owned generated render caches after context restoration. */
   invalidateRenderCaches?(): void;
   diagnostics?(): Record<string, number>;

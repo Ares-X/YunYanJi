@@ -1,4 +1,4 @@
-import { BufferGeometry, Material, Mesh, Points, ShaderMaterial } from 'three';
+import { BufferGeometry, Material, Mesh, Points, ShaderMaterial, Vector3 } from 'three';
 import { describe, expect, it } from 'vitest';
 import { createCampfire } from '../../src/scenes/rainfire/campfire';
 import { createFireIllumination } from '../../src/scenes/rainfire/fireIllumination';
@@ -54,12 +54,15 @@ describe('shared combustion illumination', () => {
       for (const elapsed of [0, 3.7, 25, 3.7]) {
         fire.update({ elapsed, delta: 1 / 60, wind: { x: .6, y: 0, z: -.2, strength: .7 },
           precipitation: .8, gust: .2, reducedMotion: false });
-        expect(fire.light.intensity).toBe(fire.illumination.intensity);
-        expect(volume.material.uniforms.uFireIntensity!.value).toBe(fire.light.intensity);
+        const energy=fire.lights.reduce((sum,light)=>sum+light.intensity,0);
+        const centroid=fire.lights.reduce((point,light)=>point.addScaledVector(light.position,light.intensity),
+          new Vector3()).multiplyScalar(1/energy);
+        expect(energy).toBeCloseTo(fire.illumination.intensity,12);
+        expect(volume.material.uniforms.uFireIntensity!.value).toBeCloseTo(energy,12);
         expect(volume.material.uniforms.uFlameHeight!.value).toBe(fire.illumination.height);
         expect(volume.material.uniforms.uFirePosition!.value).toBe(position);
         expect(volume.material.uniforms.uFireColor!.value).toBe(color);
-        expect(position.equals(fire.light.position)).toBe(true);
+        expect(position.distanceTo(centroid)).toBeLessThan(1e-12);
         expect(color.equals(fire.light.color)).toBe(true);
       }
       const sample = { ...fire.illumination };
@@ -73,7 +76,7 @@ describe('shared combustion illumination', () => {
         for (const material of Array.isArray(object.material) ? object.material : [object.material]) materials.add(material);
       });
       geometries.forEach(geometry => geometry.dispose()); materials.forEach(material => material.dispose());
-      fire.light.dispose();
+      fire.lights.forEach(light=>light.dispose());
     }
   });
 });

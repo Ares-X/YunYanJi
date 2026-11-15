@@ -1,12 +1,13 @@
 import {
   Color, DoubleSide, Float32BufferAttribute, Mesh, OrthographicCamera, PlaneGeometry, Scene,
-  ShaderMaterial, Vector2, Vector4, WebGLRenderTarget,
+  ShaderMaterial, Vector2, Vector3, Vector4, WebGLRenderTarget,
 } from 'three';
 import type { Material, Object3D, WebGLRenderer } from 'three';
 import { setContactShadowField } from './materials/proceduralMaterials';
 
 const captureVertex = /* glsl */ `
   varying float vHeight;
+  attribute float aYyjTerrainHeight;
   #include <batching_pars_vertex>
   void main() {
     #include <batching_vertex>
@@ -18,7 +19,7 @@ const captureVertex = /* glsl */ `
       p = instanceMatrix * p;
     #endif
     vec4 world = modelMatrix * p;
-    vHeight = world.y;
+    vHeight = world.y - aYyjTerrainHeight;
     gl_Position = projectionMatrix * viewMatrix * world;
   }
 `;
@@ -89,14 +90,18 @@ export class GroundContactShadows {
     this.blurScene.add(this.quad);
   }
 
-  bake(renderer: WebGLRenderer, scene: Scene): void {
+  bake(renderer: WebGLRenderer, scene: Scene, heightAt: (x: number, z: number) => number = () => 0): void {
     const hidden: Object3D[] = [];
     const materials = new Set<Material>();
+    const point = new Vector3();
+    scene.updateMatrixWorld(true);
     scene.traverse((object) => {
       let cutout = false;
+      const ground = object.userData.yyjContactGround === true;
       if (object instanceof Mesh) {
         const entries = Array.isArray(object.material) ? object.material : [object.material];
-        if (!object.castShadow && object.receiveShadow) entries.forEach((material) => materials.add(material));
+        const receiver = (!object.castShadow || ground) && object.receiveShadow;
+        if (receiver) entries.forEach((material) => materials.add(material));
         // This inexpensive override pass has no UV/alpha sampling. Foliage
         // retains its correctly clipped directional shadow and screen-space AO.
         cutout = entries.some((material) => material.alphaTest > 0
@@ -106,8 +111,19 @@ export class GroundContactShadows {
         // Letting a caster sample its own underside darkens a step's snow cap.
         // Static batches already preserve cast/receive flags, so one constant
         // vertex weight is sufficient and survives material sharing correctly.
-        const weight = Number(!object.castShadow && object.receiveShadow);
+        const weight = Number(receiver);
         const count = object.geometry.getAttribute('position')?.count ?? 0;
+        const position = object.geometry.getAttribute('position');
+        // Active landscape meshes own their transformed/merged geometry. The
+        // static attribute follows terrain elevation rather than sea level.
+        if (object.castShadow || object.receiveShadow) {
+          const heights = new Float32Array(count);
+          for (let i = 0; i < count; i++) {
+            point.fromBufferAttribute(position, i).applyMatrix4(object.matrixWorld);
+            heights[i] = heightAt(point.x, point.z);
+          }
+          object.geometry.setAttribute('aYyjTerrainHeight', new Float32BufferAttribute(heights, 1));
+        }
         const current = object.geometry.getAttribute('aYyjContactReceiver');
         if (!current || current.count !== count || current.itemSize !== 1) {
           object.geometry.setAttribute('aYyjContactReceiver',
@@ -118,7 +134,7 @@ export class GroundContactShadows {
         }
       }
       // The ground cannot occlude itself; particles and the sky are not casters.
-      if (object.visible && ('isPoints' in object || (object instanceof Mesh && (!object.castShadow || cutout)))) {
+      if (object.visible && ('isPoints' in object || (object instanceof Mesh && (!object.castShadow || cutout || ground)))) {
         hidden.push(object);
         object.visible = false;
       }

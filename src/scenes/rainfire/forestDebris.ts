@@ -4,7 +4,8 @@ import {
 } from 'three';
 import type { Vector4 } from 'three';
 import { createRandom, hashSeed } from '../../core/random';
-import { createForestEcology, FOREST_ORGANIC_POCKETS } from './forestEcology';
+import { createForestEcology, FOREST_FINE_ROOT_RUNS, FOREST_ORGANIC_POCKETS } from './forestEcology';
+import { createEarthContactSurface } from './earthMaterials';
 
 type GroundHeight = (x: number, z: number) => number;
 type Point = [number, number, number];
@@ -76,16 +77,19 @@ function createDebrisMaterial(kind: 'leaf' | 'wood' | 'gravel'): MeshStandardMat
   const surface = kind === 'leaf' ? /* glsl */ `
     float isLeaf = step(0.0,vDebrisUv.y);
     float edge = abs(vDebrisUv.x-.5)*2.0;
-    float spine = 1.0-smoothstep(.006,.024,abs(vDebrisUv.x-.5));
-    float veinPhase = fract(vDebrisUv.y*8.0-edge*.72);
-    float vein = (1.0-smoothstep(.025,.085,min(veinPhase,1.0-veinPhase)))*(1.0-edge)*.62;
-    float rot = smoothstep(.48,.76,debrisNoise(vDebrisWorld*91.0));
+    float veinAA=max(.006,fwidth(vDebrisUv.x)*.8);
+    float spine = 1.0-smoothstep(.006,.012+veinAA,abs(vDebrisUv.x-.5));
+    float veinPhase = fract(vDebrisUv.y*8.0-pow(edge,.83)*(.67+.09*sin(vDebrisUv.y*7.0)));
+    float vein = (1.0-smoothstep(.024,.042+veinAA,min(veinPhase,1.0-veinPhase)))*(1.0-edge)*.62;
+    float rot = smoothstep(.48,.76,debrisNoise(vDebrisWorld*74.0));
+    float laminaWet = smoothstep(.32,.73,debrisNoise(vDebrisWorld*18.0));
+    float livingLeaf=step(diffuseColor.r*1.04,diffuseColor.g);
     float cellular = debrisNoise(vDebrisWorld*390.0);
-    diffuseColor.rgb *= .84+cellular*.23-rot*.24;
+    diffuseColor.rgb *= .94+cellular*.12-rot*.17-laminaWet*.08*(1.0-livingLeaf);
     diffuseColor.rgb *= 1.0+(spine+vein)*.12*isLeaf;
     debrisRelief = mix((cellular-.5)*.0018,
       spine*.00024+vein*.00015+(cellular-.5)*.00010,isLeaf)*debrisDetail;
-    debrisRoughness = mix(.18,.06-rot*.06,isLeaf);
+    debrisRoughness = mix(.18,.035-laminaWet*.19+rot*.065,isLeaf);
   ` : kind === 'wood' ? /* glsl */ `
     float grain=debrisNoise(vec3(vDebrisUv.x*31.0,vDebrisUv.y*7.0,2.4));
     float fibrous=debrisNoise(vec3(vDebrisUv.x*119.0,vDebrisUv.y*13.0,7.1));
@@ -129,9 +133,15 @@ function createDebrisMaterial(kind: 'leaf' | 'wood' | 'gravel'): MeshStandardMat
         if(abs(debrisDet)>1e-8) {
           normal=normalize(abs(debrisDet)*normal-sign(debrisDet)*(dFdx(debrisRelief)*debrisCx+dFdy(debrisRelief)*debrisCy));
         }
+      `)
+      .replace('#include <lights_physical_fragment>', /* glsl */ `
+        #include <lights_physical_fragment>
+        vec3 debrisNormalChange=max(abs(dFdx(normal)),abs(dFdy(normal)));
+        float debrisNormalVariance=min(.11,max(max(debrisNormalChange.x,debrisNormalChange.y),debrisNormalChange.z)*.28);
+        material.roughness=min(1.0,sqrt(material.roughness*material.roughness+debrisNormalVariance));
       `);
   };
-  material.customProgramCacheKey = () => `forest-litter-v2/${kind}`;
+  material.customProgramCacheKey = () => `forest-litter-v3/${kind}`;
   return material;
 }
 
@@ -139,36 +149,55 @@ function curledLeaf(
   batch: DebrisBatch, random: () => number, height: GroundHeight,
   x: number, z: number, length: number, color: Color, decay = 0,
 ): void {
+  const detailed = length > .058 && Math.hypot(x - 1, z - 4.5) < 8.3;
+  const segments = detailed ? 12 : 8, columns = detailed ? 5 : 3;
   const angle = random() * Math.PI * 2, c = Math.cos(angle), s = Math.sin(angle);
-  const width = length * (.23 + random() * .25) * (1 - decay * .20);
-  const curl = (.002 + random() * .018) * (1 - decay * .62), twist = (random() - .5) * .024;
-  const phase = random() * Math.PI * 2, asymmetric = .78 + random() * .44;
+  const width = length * (.20 + random() * .13) * (1 - decay * .15);
+  const curl = (.003 + random() * .021) * (1 - decay * .54), twist = (random() - .5) * .021;
+  const phase = random() * Math.PI * 2, asymmetric = .82 + random() * .36;
+  const lobed = random() < .29, foldAt = .32 + random() * .37;
+  const hole = detailed && decay > .64 && random() < .43;
+  const holeT = .30 + random() * .37, holeSide = (random() - .5) * .76;
   const rows: number[][] = [];
-  for (let i = 0; i <= 8; i += 1) {
-    const t = i / 8, along = (t - .5) * length;
-    const outline = Math.pow(Math.sin(Math.PI * t), .78);
+  for (let i = 0; i <= segments; i += 1) {
+    const t = i / segments, along = (t - .5) * length;
+    const outline = Math.pow(Math.sin(Math.PI * t), .78) * (lobed ? .89 + .11 * Math.cos(t * Math.PI * 9 + phase) : 1);
+    const edges = [0, 1].map(() => {
+      const ragged = .86 - decay * .26 + random() * (.14 + decay * .26);
+      return ragged * (random() < decay * .20 ? .35 + random() * .3 : 1);
+    });
     const row: number[] = [];
-    for (let j = 0; j < 3; j += 1) {
-      const side = j - 1;
-      const ragged = i === 0 || i === 8 ? 0 : .76 - decay * .25 + random() * (.24 + decay * .25);
-      const torn = random() < .09 + decay * .22 ? .28 + random() * .27 : 1;
-      const across = side * width * outline * ragged * torn * (j === 0 ? asymmetric : 1);
+    for (let j = 0; j < columns; j += 1) {
+      const side = j / (columns - 1) * 2 - 1, edge = edges[side < 0 ? 0 : 1]!;
+      const across = side * width * outline * (1 + (edge - 1) * Math.abs(side)) * (side < 0 ? asymmetric : 1);
       const px = x + c * along - s * across, pz = z + s * along + c * across;
-      // A few millimetres of litter depth also keeps the thin lamina above the
-      // small interpolation error between the analytical soil and its grid mesh.
-      const uplift = .0048 - decay * .0024 + curl * Math.pow(t, 3) + Math.abs(side) * Math.sin(Math.PI * t) * curl * .30
-        + twist * side * Math.sin(Math.PI * t) * .20 + Math.sin(t * 9 + phase) * .0012;
-      row.push(batch.vertex([px, height(px, pz) + Math.max(.0015, uplift), pz], color, [j / 2, t],
-        .90 + .11 * Math.sin(Math.PI * t) + (j === 1 ? .04 : -.03)));
+      const crossCurl = Math.pow(Math.abs(side), 1.7) * Math.sin(Math.PI * t) * (curl * .65 + length * .018);
+      const fold = Math.max(0, t - foldAt) * (1 - t) * curl * 1.8;
+      const uplift = .0016 + curl * Math.pow(t, 3) + crossCurl + fold
+        + twist * side * Math.sin(Math.PI * t) * .22 + Math.sin(t * 15 + phase + side) * .00065
+        + (1 - Math.abs(side)) * Math.sin(Math.PI * t) * .00055;
+      row.push(batch.vertex([px, height(px, pz) + Math.max(.0008, uplift), pz], color, [j / (columns - 1), t],
+        .93 + .07 * Math.sin(Math.PI * t) + (Math.abs(side) < .1 ? .045 : -.025)));
     }
     rows.push(row);
   }
-  for (let i = 0; i < 8; i += 1) {
-    for (let j = 0; j < 2; j += 1) {
-      if (random() < decay * .10 && i > 1 && i < 7) continue;
+  for (let i = 0; i < segments; i += 1) {
+    for (let j = 0; j < columns - 1; j += 1) {
+      const t = (i + .5) / segments, side = (j + .5) / (columns - 1) * 2 - 1;
+      if (hole && ((t - holeT) / .105) ** 2 + ((side - holeSide) / .24) ** 2 < 1) continue;
+      if (!detailed && random() < decay * .065 && i > 1 && i < segments - 1) continue;
       const a = rows[i]![j]!, b = rows[i + 1]![j]!, c0 = rows[i]![j + 1]!, d = rows[i + 1]![j + 1]!;
       batch.triangle(a, c0, b); batch.triangle(c0, d, b);
     }
+  }
+  if (detailed) {
+    const tipX = x - c * length * .65, tipZ = z - s * length * .65;
+    const rootX = x - c * length * .5, rootZ = z - s * length * .5, radius = .00048;
+    const a = batch.vertex([tipX - s * radius, height(tipX, tipZ) + .001, tipZ + c * radius], color, [0, 0], .72);
+    const b = batch.vertex([tipX + s * radius, height(tipX, tipZ) + .001, tipZ - c * radius], color, [1, 0], .72);
+    const c0 = batch.vertex([rootX - s * radius, height(rootX, rootZ) + .0018, rootZ + c * radius], color, [0, 1]);
+    const d = batch.vertex([rootX + s * radius, height(rootX, rootZ) + .0018, rootZ - c * radius], color, [1, 1]);
+    batch.triangle(a, b, c0); batch.triangle(b, d, c0);
   }
 }
 
@@ -338,17 +367,105 @@ function shrubLeaf(
   }
 }
 
+function attachedMossColony(
+  leaves: DebrisBatch, random: () => number, center: Vector3, radius: number, up: Vector3,
+): void {
+  const side = up.clone().cross(new Vector3(0, 0, 1)).normalize();
+  const forward = side.clone().cross(up).normalize();
+  const colors = [0x45552e, 0x526238, 0x37482a, 0x62643a].map(c => new Color(c));
+  for (let shoot = 0; shoot < 24; shoot += 1) {
+    const angle = random() * Math.PI * 2, r = Math.sqrt(random()) * radius;
+    const root = center.clone().addScaledVector(side, Math.cos(angle) * r).addScaledVector(forward, Math.sin(angle) * r);
+    root.addScaledVector(up, -.0015 + (1 - r / radius) * .0025);
+    const rise = .005 + random() * .012, color = colors[shoot % colors.length]!;
+    for (let leaflet = 0; leaflet < 3; leaflet += 1) {
+      const a = angle + leaflet * 2.1, length = .0035 + random() * .0045;
+      const direction = side.clone().multiplyScalar(Math.cos(a)).addScaledVector(forward, Math.sin(a));
+      const cross = up.clone().cross(direction).normalize();
+      const middle = root.clone().addScaledVector(up, rise * .52).addScaledVector(direction, length * .55);
+      const tip = root.clone().addScaledVector(up, rise).addScaledVector(direction, length);
+      const left = middle.clone().addScaledVector(cross, length * .21), right = middle.clone().addScaledVector(cross, -length * .21);
+      const p = leaves.vertex([root.x, root.y, root.z], color, [.5, -1], .63);
+      const q = leaves.vertex([left.x, left.y, left.z], color, [0, -1], .89);
+      const r0 = leaves.vertex([right.x, right.y, right.z], color, [1, -1], .96);
+      const s = leaves.vertex([tip.x, tip.y, tip.z], color, [.5, -1], 1.04);
+      leaves.triangle(p, q, r0); leaves.triangle(q, s, r0);
+    }
+  }
+}
+
+function connectedFineRoots(
+  leaves: DebrisBatch, wood: DebrisBatch, random: () => number, height: GroundHeight,
+): { branches: number; litter: number } {
+  const rootColor = new Color(0x514737), deadLeaf = new Color(0x51412d);
+  let branches = 0, litter = 0;
+  for (const [ax, az, bx, bz, radius] of FOREST_FINE_ROOT_RUNS) {
+    const dx = bx - ax, dz = bz - az, length = Math.hypot(dx, dz);
+    const sx = -dz / length, sz = dx / length, bend = (random() - .5) * .42, phase = random() * 6.28;
+    const curve = (t: number) => {
+      const wander = Math.sin(Math.PI * t) * (bend + .075 * Math.sin(t * Math.PI * 2.4 + phase));
+      const x = ax + dx * t + sx * wander;
+      const z = az + dz * t + sz * wander;
+      const r = radius * (1 - t * .79);
+      const buried = .012 * Math.sin(t * Math.PI * 2 + phase) ** 2;
+      return new Vector3(x, height(x, z) + r * (-.25 + .17 * Math.sin(Math.PI * t)) - buried - .016 * t ** 8, z);
+    };
+    growingShoot(wood, curve, radius, rootColor, 28, 12);
+    branches += 1;
+    for (let fork = 0; fork < 2; fork += 1) {
+      const t = .30 + fork * .28, start = curve(t), sign = fork % 2 ? 1 : -1;
+      const rx = dx / length * .55 + sx * sign * .75, rz = dz / length * .55 + sz * sign * .75;
+      const reach = .66 + random() * .66, childRadius = radius * (1 - t * .79) * .34;
+      const child = (u: number) => {
+        const x = start.x + rx * reach * u + sx * Math.sin(Math.PI * u) * .055;
+        const z = start.z + rz * reach * u + sz * Math.sin(Math.PI * u) * .055;
+        const soil = height(x, z) - childRadius * (1 - u * .79) * .45 - .006 * u * (1 - u) - .010 * u ** 6;
+        const blend = Math.min(1, u * 5);
+        return new Vector3(x, start.y * (1 - blend) + soil * blend, z);
+      };
+      growingShoot(wood, child, childRadius, rootColor, 16, 8); branches += 1;
+    }
+    for (let colony = 0; colony < 6; colony += 1) {
+      const t = .18 + colony * .10 + random() * .035, p = curve(t), r = radius * (1 - t * .79);
+      p.y += r * .86;
+      if (p.y < height(p.x, p.z) + .002) continue;
+      const up = new Vector3(sx * .22, 1, sz * .22).normalize();
+      attachedMossColony(leaves, random, p, .024 + random() * .025, up);
+    }
+    for (let leaf = 0; leaf < 8; leaf += 1) {
+      const t = .22 + random() * .58, p = curve(t), side = random() < .5 ? -1 : 1;
+      const offset = radius * (1 - t * .79) + .025 + random() * .09;
+      const x = p.x + sx * offset * side, z = p.z + sz * offset * side;
+      if (Math.hypot(x + .8, z + 1.6) < 1.14) continue;
+      curledLeaf(leaves, random, height, x, z, .045 + random() * .055, deadLeaf, .72 + random() * .28);
+      litter += 1;
+    }
+  }
+  return { branches, litter };
+}
+
 function addWoodlandShrub(
   leaves: DebrisBatch, wood: DebrisBatch, random: () => number, height: GroundHeight,
   x: number, z: number, scale: number,
 ): void {
-  const origin = new Vector3(x, height(x, z) + .005, z), branchColor = new Color(0x4a4833);
+  const colony = new Vector3(x, height(x, z) + .005, z), branchColor = new Color(0x4a4833);
   const palette = [0x3d5635, 0x4d613b, 0x465739, 0x536140].map(c => new Color(c));
   const shoots = 5 + Math.floor(random() * 2);
   for (let shoot = 0; shoot < shoots; shoot += 1) {
     const angle = random() * Math.PI * 2, outward = new Vector3(Math.cos(angle), 0, Math.sin(angle));
     const side = new Vector3(-outward.z, 0, outward.x);
-    const rise = scale * (.57 + random() * .47), spread = scale * (.27 + random() * .39);
+    const lateral = Math.sqrt(random()) * scale * .48;
+    const origin = colony.clone().addScaledVector(outward, lateral);
+    origin.y = height(origin.x, origin.z) + .006;
+    if (shoot > 0) {
+      const runner = (t: number) => {
+        const p = colony.clone().lerp(origin, t).addScaledVector(side, Math.sin(Math.PI * t) * .055);
+        p.y = height(p.x, p.z) + .004 + Math.sin(Math.PI * t) * .012;
+        return p;
+      };
+      growingShoot(wood, runner, .0033 * scale, branchColor, 6, 5);
+    }
+    const rise = scale * (.36 + random() * .69), spread = scale * (.32 + random() * .47);
     const lean = (random() - .5) * .16 * scale;
     const curve = (t: number) => origin.clone().addScaledVector(outward, spread * Math.pow(t, 1.4))
       .addScaledVector(side, Math.sin(t * Math.PI) * lean)
@@ -386,6 +503,10 @@ export function buildForestDebris(
 ): Group {
   const group = new Group();
   group.name = 'wet-forest-litter';
+  const contactSoil = createEarthContactSurface(seed, height, waterLevel);
+  group.add(contactSoil.mesh);
+  // Every small object rests on the exact near mesh, not on the lower coarse field.
+  height = contactSoil.height;
   const random = createRandom(`${seed}/forest-floor/geometry`);
   const salt = hashSeed(`${seed}/forest-floor/distribution`);
   const ecology = createForestEcology(seed);
@@ -432,7 +553,7 @@ export function buildForestDebris(
   }
 
   const rockTemplate = new IcosahedronGeometry(1, 0);
-  const rockPositions = rockTemplate.getAttribute('position');
+  const fineRockTemplate = new IcosahedronGeometry(1, 1);
   let pebbleCount = 0;
   for (let attempts = 0; attempts < 14000 && pebbleCount < 340; attempts += 1) {
     const [x, z] = sample(false);
@@ -445,18 +566,26 @@ export function buildForestDebris(
     const scaleY = radius * (.19 + random() * .25), angle = random() * Math.PI * 2;
     const c = Math.cos(angle), s = Math.sin(angle), base = height(x, z) + scaleY * .20;
     const color = stonePalette[Math.floor(random() * stonePalette.length)]!;
+    const rockPositions = (Math.hypot(x - 1, z - 4.5) < 8.3 && radius > .016
+      ? fineRockTemplate : rockTemplate).getAttribute('position');
     const indices: number[] = [];
+    const sharedVertices = new Map<string, number>();
     for (let i = 0; i < rockPositions.count; i += 1) {
       const xx = rockPositions.getX(i), yy = rockPositions.getY(i), zz = rockPositions.getZ(i);
+      const key = `${Math.round(xx * 1e5)},${Math.round(yy * 1e5)},${Math.round(zz * 1e5)}`;
+      const existing = sharedVertices.get(key);
+      if (existing !== undefined) { indices.push(existing); continue; }
       const irregular = .89 + fieldHash(Math.round(xx * 19), Math.round(zz * 23 + yy * 7), pebbleCount + salt) * .22;
       const rx = xx * scaleX * irregular, rz = zz * scaleZ * irregular;
-      indices.push(gravel.vertex([x + c * rx - s * rz, base + yy * scaleY * irregular, z + s * rx + c * rz],
-        color, [xx * .5 + .5, zz * .5 + .5], yy < 0 ? .67 : .92 + yy * .08));
+      const vertex = gravel.vertex([x + c * rx - s * rz, base + yy * scaleY * irregular, z + s * rx + c * rz],
+        color, [xx * .5 + .5, zz * .5 + .5], yy < 0 ? .67 : .92 + yy * .08);
+      sharedVertices.set(key, vertex); indices.push(vertex);
     }
     for (let i = 0; i < indices.length; i += 3) gravel.triangle(indices[i]!, indices[i + 1]!, indices[i + 2]!);
     pebbleCount += 1;
   }
   rockTemplate.dispose();
+  fineRockTemplate.dispose();
 
   let twigCount = 0;
   for (let attempts = 0; attempts < 3000 && twigCount < 180; attempts += 1) {
@@ -634,14 +763,19 @@ export function buildForestDebris(
     }
   }
 
+  const fineRoots = connectedFineRoots(leaves, wood, random, height);
+  leafCount += fineRoots.litter;
+
   group.add(leaves.mesh(createDebrisMaterial('leaf'), 'curled-leaves-ferns-moss'));
   group.add(wood.mesh(createDebrisMaterial('wood'), 'fallen-twigs-and-needles'));
   group.add(gravel.mesh(createDebrisMaterial('gravel'), 'silt-bound-fine-gravel'));
   group.userData.procedural = {
     leafCount, intactLeafCount, pebbleCount, twigCount, needleCount, fernCount, shrubCount, understoreyGroups,
     strandlineLeaves,
-    triangles: (leaves.indices.length + wood.indices.length + gravel.indices.length) / 3,
-    draws: 3,
+    exposedRootBranches: fineRoots.branches,
+    triangles: (leaves.indices.length + wood.indices.length + gravel.indices.length + contactSoil.mesh.geometry.index!.count) / 3,
+    contactSoilTriangles: contactSoil.mesh.geometry.index!.count / 3,
+    draws: 4,
   };
   return group;
 }

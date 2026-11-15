@@ -36,9 +36,12 @@ test('renders the rainy refuge and supports motion, sound and immersion', async 
   await expect(page.locator('#scene-title')).toHaveText('雨歇之前');
   expect(Number(initial.triangles)).toBeGreaterThan(1000);
   expect(Number(initial.calls)).toBeGreaterThan(1);
-  // Initial rendering also caches all six local fire-shadow cube faces.
-  expect(Number(initial.calls)).toBeLessThan(135);
+  // The initial frame includes independent opaque depth and both six-face
+  // fire-shadow maps. Keep the incoming foundation's complete-frame budget.
+  expect(Number(initial.calls)).toBeLessThan(230);
   expect(initial.contactBakes).toBe(1);
+  expect(initial.opaqueDepth).toBe(true);
+  expect(initial.indirectOcclusion).toBe(true);
   expect(initial.canopyBakes).toBe(1);
   expect(Number(initial.canopyShadowUpdates)).toBeGreaterThan(0);
   expect(Number(initial.fireShadowUpdates)).toBeGreaterThan(0);
@@ -88,7 +91,7 @@ test('renders the rainy refuge and supports motion, sound and immersion', async 
   expect(moving.paused).toBe(false);
   // Moving foliage and the fire source now refresh shadows at separate bounded
   // cadences; even a frame updating both lights retains a complete-frame budget.
-  expect(Number(moving.calls)).toBeLessThan(135);
+  expect(Number(moving.calls)).toBeLessThan(230);
   expect(moving.canopyBakes).toBe(initial.canopyBakes);
   let previousViewX = Number(moving.viewX);
   for (const distance of [40, 20]) {
@@ -160,6 +163,8 @@ test('previews settings, updates procedural rendering and releases resources', a
   const afterQuality = await state(page);
   expect(afterQuality.quality).toBe('low');
   expect(afterQuality.ambientOcclusion).toBe(false);
+  expect(afterQuality.indirectOcclusion).toBe(false);
+  expect(afterQuality.opaqueDepth).toBe(true);
   expect(afterQuality.bloom).toBe(false);
   expect(afterQuality.geometries).toBe(beforeQuality.geometries);
   expect(afterQuality.contactBakes).toBe(beforeQuality.contactBakes);
@@ -187,6 +192,8 @@ test('previews settings, updates procedural rendering and releases resources', a
   const highAgain = await settledLighting(page, Number(beforeQuality.elapsed));
   expect(highAgain.quality).toBe('high');
   expect(highAgain.ambientOcclusion).toBe(true);
+  expect(highAgain.indirectOcclusion).toBe(true);
+  expect(highAgain.opaqueDepth).toBe(true);
   expect(highAgain.bloom).toBe(true);
   expect(highAgain.reflectionSize).toBe(512);
   expect(highAgain.geometries).toBe(beforeQuality.geometries);
@@ -194,7 +201,7 @@ test('previews settings, updates procedural rendering and releases resources', a
   expect(highAgain.elapsed).toBe(beforeQuality.elapsed);
   expect(highAgain.contactBakes).toBe(beforeQuality.contactBakes);
   expect(highAgain.canopyBakes).toBe(beforeQuality.canopyBakes);
-  expect(Number(highAgain.calls)).toBeLessThan(135);
+  expect(Number(highAgain.calls)).toBeLessThan(230);
   await page.screenshot({ path: testInfo.outputPath('settings.png'), timeout: 45_000, animations: 'disabled', scale: 'css' });
   await testInfo.attach('settings', { path: testInfo.outputPath('settings.png'), contentType: 'image/png' });
   const highStill = await state(page);

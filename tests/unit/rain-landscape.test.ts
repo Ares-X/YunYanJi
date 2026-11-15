@@ -19,7 +19,9 @@ describe('rain forest refuge', () => {
     }
   });
 
-  it('bounds scene geometry, preserves flame attributes across quality changes, and releases shared resources once', () => {
+  // This builds the full CPU world and checks every vertex/index. The hosted
+  // runner needs about 5.5s; the default 5s unit budget is not a frame budget.
+  it('bounds scene geometry, preserves flame attributes across quality changes, and releases shared resources once', { timeout: 15_000 }, () => {
     const scene = createRainfireWorld({ seed: 'rainfire-01', quality: 'medium' });
     const geometries = new Set<BufferGeometry>(), materials = new Set<Material>();
     let triangles = 0;
@@ -42,7 +44,9 @@ describe('rain forest refuge', () => {
     geometries.forEach(geometry => geometry.addEventListener('dispose', () => { geometryReleases++; }));
     materials.forEach(material => material.addEventListener('dispose', () => { materialReleases++; }));
     try {
-      expect(triangles).toBeLessThan(700_000);
+      // Mature full crowns and centimetre-scale foreground relief share a
+      // fixed geometry budget; quality switches must not rebuild the world.
+      expect(triangles).toBeLessThan(1_500_000);
       for (const quality of ['low', 'high', 'medium'] as const) scene.setQuality(quality);
       expect(geometryReleases).toBe(0);
       expect(materialReleases).toBe(0);

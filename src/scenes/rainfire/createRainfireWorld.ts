@@ -35,7 +35,11 @@ export function createRainfireWorld(options: SceneOptions): LandscapeScene {
   return {
     group,
     fireLight: fire.light,
+    fireLights: fire.lights,
     movingCanopy: true,
+    groundHeightAt: landscape.height,
+    setSceneDepth: field => fire.setSceneDepth(field),
+    setEnvironmentCapture: enabled => forest.setEnvironmentCapture(enabled),
     cameraPosition: new Vector3(1, landscape.height(1, 4.5) + 1.25, 4.5),
     cameraTarget: new Vector3(-.4, .95, -4),
     portraitCameraPosition: new Vector3(.30, landscape.height(.30, 4.4) + 1.28, 4.4),

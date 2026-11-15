@@ -5,6 +5,7 @@ import {
 import type { DirectionalLight, PerspectiveCamera, PointLight, Texture, WebGLRenderer } from 'three';
 import { FullScreenQuad, Pass } from 'three/addons/postprocessing/Pass.js';
 import type { EnvironmentSnapshot, QualityLevel } from '../core/types';
+import type { SceneDepthField } from './SurfaceOcclusion';
 
 const STEPS = { low: 10, medium: 18, high: 28 } as const;
 function createMistNoise():Data3DTexture {
@@ -154,13 +155,17 @@ export class ForestAtmospherePass extends Pass {
   private readonly quad: FullScreenQuad;
   private quality: QualityLevel;
   private readonly fireWorld=new Vector3();
+  private readonly lightWorld=new Vector3();
   private readonly sunWorld=new Vector3();
   private readonly sunTarget=new Vector3();
+  private readonly fire:PointLight|undefined;
   private hasShadows=false;
 
   constructor(camera:PerspectiveCamera,private readonly sun:DirectionalLight,
-    private readonly fire:PointLight|undefined,canopyTexture:Texture,canopyMatrix:Matrix4,quality:QualityLevel) {
+    private readonly fireLights:readonly PointLight[],canopyTexture:Texture,canopyMatrix:Matrix4,
+    private readonly depthField:SceneDepthField,quality:QualityLevel) {
     super(); this.quality=quality;
+    const fire=this.fire=fireLights[0];
     this.target.texture.name='generated-forest-mist';
     this.volume=new ShaderMaterial({
       depthTest:false,depthWrite:false,toneMapped:false,vertexShader:vertex,fragmentShader:volumeFragment,
@@ -203,7 +208,8 @@ export class ForestAtmospherePass extends Pass {
 
   override render(renderer:WebGLRenderer,write:WebGLRenderTarget,read:WebGLRenderTarget):void {
     const uniforms=this.volume.uniforms;
-    uniforms.tDepth!.value=read.depthTexture;
+    // Independent opaque depth cannot be lost when composer swaps colour targets.
+    uniforms.tDepth!.value=this.depthField.texture;
     this.sun.getWorldPosition(this.sunWorld);
     this.sun.target.getWorldPosition(this.sunTarget);
     (uniforms.uSunDirection!.value as Vector3).copy(this.sunWorld).sub(this.sunTarget).normalize();
@@ -218,19 +224,28 @@ export class ForestAtmospherePass extends Pass {
       (uniforms.uFireRange!.value as Vector2).set(this.fire!.shadow.camera.near,this.fire!.shadow.camera.far);
     }
     if(this.fire) {
-      this.fire.getWorldPosition(this.fireWorld);
-      uniforms.uFireIntensity!.value=this.fire.intensity;
-      (uniforms.uFireColor!.value as Color).copy(this.fire.color);
+      this.fireWorld.set(0,0,0);
+      let energy=0,red=0,green=0,blue=0;
+      for(const light of this.fireLights) {
+        light.getWorldPosition(this.lightWorld);
+        this.fireWorld.addScaledVector(this.lightWorld,light.intensity);
+        energy+=light.intensity;
+        red+=light.color.r*light.intensity;green+=light.color.g*light.intensity;blue+=light.color.b*light.intensity;
+      }
+      this.fireWorld.multiplyScalar(1/Math.max(.001,energy));
+      uniforms.uFireIntensity!.value=energy;
+      (uniforms.uFireColor!.value as Color).setRGB(red/Math.max(.001,energy),
+        green/Math.max(.001,energy),blue/Math.max(.001,energy));
     }
     this.quad.material=this.volume;
     renderer.setRenderTarget(this.target);this.quad.render(renderer);
     this.composite.uniforms.tDiffuse!.value=read.texture;
-    this.composite.uniforms.tDepth!.value=read.depthTexture;
+    this.composite.uniforms.tDepth!.value=this.depthField.texture;
     this.quad.material=this.composite;
     renderer.setRenderTarget(this.renderToScreen?null:write);this.quad.render(renderer);
   }
 
-  invalidate():void {this.target.dispose();}
+  invalidate():void {this.target.dispose();this.noise.needsUpdate=true;}
   diagnostics():Record<string,number> {
     return {mistSteps:STEPS[this.quality],mistWidth:this.target.width,mistHeight:this.target.height};
   }

@@ -118,6 +118,11 @@ export class CanopyLightField {
 
   get bakes(): number { return this.bakeCount; }
 
+  /** The local radiance probe already sees the actual overhead geometry. */
+  setEnvironmentCapture(enabled: boolean): void {
+    this.enabled.value = enabled ? 0 : Number(this.bakeCount > 0);
+  }
+
   applyTo(scene: Scene): void {
     if (this.disposed) return;
     scene.traverse(object => {
@@ -129,7 +134,7 @@ export class CanopyLightField {
         const key = material.customProgramCacheKey();
         // Leaves already carry a local estimate of crown interior occlusion.
         // Keep the broad field weaker there rather than blackening it twice.
-        const strength = material.name === 'living-forest-individual-leaves' ? .22 : .43;
+        const strength = material.name === 'living-forest-individual-leaves' ? .14 : .24;
         material.onBeforeCompile = (shader, renderer) => {
           previous(shader, renderer);
           shader.uniforms.uYyjCanopyMap = { value: this.texture };
@@ -169,6 +174,9 @@ export class CanopyLightField {
               float yyjSkyTransmission=1.0-yyjOverhead*yyjBelowCrown*uYyjCanopyStrength;
               reflectedLight.indirectDiffuse*=yyjSkyTransmission;
               reflectedLight.indirectSpecular*=mix(1.0,yyjSkyTransmission,.70);
+              #ifdef USE_CLEARCOAT
+                clearcoatSpecularIndirect*=mix(1.0,yyjSkyTransmission,.70);
+              #endif
             `);
         };
         material.customProgramCacheKey = () => `${key}/canopy-light-field-v1`;

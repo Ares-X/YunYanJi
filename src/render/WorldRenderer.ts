@@ -1,14 +1,15 @@
 import {
-  ACESFilmicToneMapping, Color, DirectionalLight, FogExp2, HemisphereLight,
-  PCFShadowMap, PerspectiveCamera, PMREMGenerator, Scene, SRGBColorSpace, Vector2,
+  AgXToneMapping, Color, DirectionalLight, FogExp2, HemisphereLight,
+  PCFShadowMap, PerspectiveCamera, Scene, SRGBColorSpace, Vector2,
   Vector3, WebGLRenderer,
 } from 'three';
-import type { WebGLCubeRenderTarget } from 'three';
+import type { PointLight, WebGLCubeRenderTarget } from 'three';
 import type { EnvironmentSnapshot, QualityLevel } from '../core/types';
 import type { LandscapeScene } from '../scenes/types';
 import { createRainAtmosphere, CLOUD_LIGHT_DIRECTION } from './RainAtmosphere';
 import { GroundContactShadows } from './GroundContactShadows';
 import { LandscapePostProcessing } from './LandscapePostProcessing';
+import { captureForestEnvironment } from './ForestEnvironment';
 import { CanopyLightField } from './CanopyLightField';
 import { drawingSize, QUALITY } from './quality';
 
@@ -17,9 +18,10 @@ export class WorldRenderer {
   readonly scene = new Scene();
   readonly camera = new PerspectiveCamera(49, 1, 0.12, 430);
   private readonly sky = createRainAtmosphere();
-  private readonly sun = new DirectionalLight('#c3d7e0', 1.15);
+  private readonly sun = new DirectionalLight('#c3d7e0', 0.80);
   private readonly contacts = new GroundContactShadows();
   private readonly canopy = new CanopyLightField();
+  private readonly fireLights: readonly PointLight[];
   private readonly post: LandscapePostProcessing;
   private environment: WebGLCubeRenderTarget | undefined;
   private quality: QualityLevel;
@@ -38,64 +40,80 @@ export class WorldRenderer {
 
   constructor(readonly canvas: HTMLCanvasElement, readonly landscape: LandscapeScene, quality: QualityLevel) {
     this.quality = quality;
+    const primaryFire = landscape.fireLight;
+    this.fireLights = primaryFire
+      ? [primaryFire, ...(landscape.fireLights ?? []).filter(light => light !== primaryFire)]
+      : landscape.fireLights ?? [];
     this.renderer = new WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance', alpha: false });
     this.renderer.outputColorSpace = SRGBColorSpace;
-    this.renderer.toneMapping = ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.08;
+    this.renderer.toneMapping = AgXToneMapping;
+    this.renderer.toneMappingExposure = 1.15;
     // Count nested reflection passes as part of the complete visible frame.
     this.renderer.info.autoReset = false;
     this.renderer.shadowMap.type = PCFShadowMap;
     this.renderer.shadowMap.autoUpdate = false;
     this.scene.background = new Color('#4d6874');
-    // A very light far-distance veil also lives in the reflected scene. The
-    // view-dependent, shadowed mist is integrated once by the atmosphere pass.
+    // Reflections retain only a light far veil; the main view integrates its
+    // shadowed, height-dependent mist once after the PBR scene.
     this.scene.fog = new FogExp2('#4d6874', 0.003);
-    this.scene.environmentIntensity = 1.12;
-    this.scene.add(new HemisphereLight('#a6b4bc', '#484435', 0.16));
+    this.scene.environmentIntensity = 1.55;
+    this.scene.add(new HemisphereLight('#a6b4bc', '#484435', 0.10));
     // Keep the shadow volume over the visible foreground as well as the grove.
     this.sun.target.position.set(-1, 0, -8);
     this.sun.position.copy(this.sun.target.position).addScaledVector(CLOUD_LIGHT_DIRECTION, 82);
-    Object.assign(this.sun.shadow.camera, { left: -34, right: 34, top: 34, bottom: -34, near: 0.5, far: 142 });
+    Object.assign(this.sun.shadow.camera, { left: -18, right: 18, top: 21, bottom: -21, near: 0.5, far: 142 });
     this.sun.shadow.bias = -0.00008;
-    this.sun.shadow.normalBias = 0.035;
-    this.sun.shadow.radius = 3.5;
-    this.sun.shadow.intensity = 0.75;
+    this.sun.shadow.normalBias = 0.008;
+    this.sun.shadow.radius = 7;
+    this.sun.shadow.intensity = 1;
     this.sun.shadow.autoUpdate = false;
-    if (landscape.fireLight) landscape.fireLight.shadow.autoUpdate = false;
+    this.fireLights.forEach(light => { light.shadow.autoUpdate = false; });
     this.scene.add(this.sun, this.sun.target, landscape.group);
     this.camera.position.copy(landscape.cameraPosition);
     this.lookAt.copy(landscape.cameraTarget);
     this.camera.lookAt(this.lookAt);
     this.canopy.applyTo(this.scene);
     this.post = new LandscapePostProcessing(this.renderer, this.scene, this.camera, this.sun,
-      landscape.fireLight, this.canopy.texture, this.canopy.matrix, quality);
-    this.rebuildEnvironment();
+      this.fireLights, this.canopy.texture, this.canopy.matrix, quality);
+    landscape.setSceneDepth?.(this.post.depthField);
     this.setQuality(quality);
+    this.rebuildEnvironment();
   }
 
-  async prepare(): Promise<void> { await this.renderer.compileAsync(this.scene, this.camera); }
+  async prepare(): Promise<void> {
+    this.post.prepare();
+    await this.renderer.compileAsync(this.scene, this.camera);
+  }
 
   rebuildEnvironment(): void {
-    const skyScene = new Scene();
-    skyScene.add(this.sky.mesh);
-    const generator = new PMREMGenerator(this.renderer);
-    this.environment?.dispose();
+    const oldEnvironment = this.environment;
+    // Static radiance must not depend on the wind's time when context loss
+    // happened. Capture the same rest pose and initial sky every time.
+    this.landscape.setEnvironmentCapture?.(true);
     this.sky.setEnvironmentCapture(true);
     try {
-      this.environment = generator.fromScene(skyScene, 0.08, 0.1, 1000, { size: 256 });
+      this.contacts.bake(this.renderer, this.scene, this.landscape.groundHeightAt);
+      this.canopy.bake(this.renderer, this.scene);
+      this.canopy.setEnvironmentCapture(true);
+      // The probe already sees canopy geometry: do not bake the extra spatial
+      // sky estimate into it and then apply that estimate for a second time.
+      this.sun.shadow.needsUpdate = true;
+      this.renderer.shadowMap.needsUpdate = true;
+      this.environment = captureForestEnvironment(this.renderer, this.scene,
+        this.sky.mesh, new Vector3(-.3, 1.7, -2.3));
     } finally {
       this.sky.setEnvironmentCapture(false);
-      generator.dispose();
+      this.canopy.setEnvironmentCapture(false);
+      this.landscape.setEnvironmentCapture?.(false);
     }
     this.scene.environment = this.environment.texture;
+    oldEnvironment?.dispose();
     this.scene.add(this.sky.mesh);
     this.landscape.invalidateRenderCaches?.();
-    this.contacts.bake(this.renderer, this.scene);
-    this.canopy.bake(this.renderer, this.scene);
     this.post.invalidate();
     this.lastCanopyShadow = this.lastFireShadow = -Infinity;
     this.sun.shadow.needsUpdate = true;
-    if (this.landscape.fireLight) this.landscape.fireLight.shadow.needsUpdate = true;
+    this.fireLights.forEach(light => { light.shadow.needsUpdate = true; });
     this.renderer.shadowMap.needsUpdate = true;
   }
 
@@ -122,7 +140,7 @@ export class WorldRenderer {
       this.sun.shadow.mapSize.set(config.shadowSize, config.shadowSize);
     }
     this.sun.shadow.needsUpdate = true;
-    if (this.landscape.fireLight) this.landscape.fireLight.shadow.needsUpdate = true;
+    this.fireLights.forEach(light => { light.shadow.needsUpdate = true; });
     this.lastCanopyShadow = this.lastFireShadow = -Infinity;
     this.renderer.shadowMap.needsUpdate = true;
     this.landscape.setQuality(quality);
@@ -172,8 +190,8 @@ export class WorldRenderer {
       this.frameFence = null;
     }
     this.renderer.info.reset();
-    // Broad tree shadows move slowly; a near fire needs a faster cadence. Each
-    // light owns its invalidation, so a fire update never redraws the whole grove.
+    // Broad tree shadows move slowly; the near fire needs a faster cadence.
+    // Each light owns its invalidation, including the two fire-light samples.
     if (QUALITY[this.quality].shadows) {
       if (frame.elapsed < this.lastCanopyShadow || this.lastCanopyShadow === -Infinity
         || (frame.delta === 0 && frame.elapsed !== this.lastCanopyShadow)
@@ -183,10 +201,10 @@ export class WorldRenderer {
         this.canopyShadowUpdates += 1;
         this.renderer.shadowMap.needsUpdate = true;
       }
-      const fire = this.landscape.fireLight;
-      if (fire && (frame.elapsed < this.lastFireShadow || frame.elapsed - this.lastFireShadow >= 1 / 10
+      if (this.fireLights.length && (frame.elapsed < this.lastFireShadow
+        || frame.elapsed - this.lastFireShadow >= 1 / 10
         || (frame.delta === 0 && frame.elapsed !== this.lastFireShadow))) {
-        fire.shadow.needsUpdate = true;
+        this.fireLights.forEach(light => { light.shadow.needsUpdate = true; });
         this.lastFireShadow = frame.elapsed;
         this.fireShadowUpdates += 1;
         this.renderer.shadowMap.needsUpdate = true;

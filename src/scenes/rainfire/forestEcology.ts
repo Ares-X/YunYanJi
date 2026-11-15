@@ -14,6 +14,13 @@ export const FOREST_ORGANIC_POCKETS: readonly (readonly [number, number, number]
   [-.25, 1.25, .52], [1.7, -.15, .60],
 ];
 
+/** Exposed portions of the same trees' lateral roots; endpoints bury into soil. */
+export const FOREST_FINE_ROOT_RUNS: readonly (readonly [number, number, number, number, number])[] = [
+  [-5.15, -2.5, -2.55, .65, .058], [-5.15, -2.5, -1.85, -.65, .045],
+  [-5.15, -2.5, -3.0, -4.8, .051], [5.85, -6.65, 2.35, -2.6, .052],
+  [5.85, -6.65, 2.1, -5.1, .046], [5.85, -6.65, 4.1, -9.1, .045],
+];
+
 export interface EcologySample {
   organicCover: number;
   compactedPath: number;
@@ -66,6 +73,9 @@ export function createForestEcology(seed: string): {
       let root = 0, distance = Infinity;
       for (const [rx, rz, radius] of FOREST_ORGANIC_POCKETS) {
         root = Math.max(root, Math.exp(-((x - rx) ** 2 + (z - rz) ** 2) / (radius * radius * .72)));
+      }
+      for (const [ax, az, bx, bz] of FOREST_FINE_ROOT_RUNS) {
+        root = Math.max(root, .52 * Math.exp(-segmentDistanceSquared(x, z, [ax, az], [bx, bz]) / .22));
       }
       for (let i = 1; i < path.length; i += 1) distance = Math.min(distance,
         segmentDistanceSquared(x, z, path[i - 1]!, path[i]!));
