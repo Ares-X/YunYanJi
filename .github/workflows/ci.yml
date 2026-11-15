@@ -3,7 +3,20 @@ name: Verify procedural foundation
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+  workflow_dispatch:
+    inputs:
+      upload_evidence:
+        description: Keep the browser report and screenshots for this run
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -24,13 +37,16 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
-      - run: npx playwright install --with-deps chromium
-      - run: npm run test:browser
+      # Draft iterations use local captures; ready PRs retain the full quality gate.
+      - if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+        run: npx playwright install --with-deps chromium
+      - if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+        run: npm run test:browser
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: ${{ !cancelled() && (failure() || (github.event_name == 'workflow_dispatch' && inputs.upload_evidence)) }}
         with:
           name: browser-evidence
-          path: |
-            playwright-report/
-            test-results/
-          retention-days: 7
+          # HTML reports already contain attached screenshots and failure traces.
+          path: playwright-report/
+          if-no-files-found: ignore
+          retention-days: 3

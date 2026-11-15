@@ -37,10 +37,27 @@ describe('generated ambience samples', () => {
     expect(result.rms).toBeGreaterThan(0.06);
     expect(result.rms).toBeLessThan(0.35);
     expect(Math.abs(result.mean)).toBeLessThan(1e-6);
-    expect(samples[0]).toBe(samples.at(-1));
+    // A sampled noise loop need not duplicate its first and last samples. Its
+    // boundary step should be an ordinary noise step, not an exceptional impulse.
+    const stepRms = result.rms * Math.sqrt(result.differenceEnergyRatio);
+    expect(Math.abs((samples[0] ?? 0) - (samples.at(-1) ?? 0))).toBeLessThan(stepRms * 4);
     // White noise's first-difference energy is around 2x its energy. Wind needs
     // much less high-frequency energy even before the Web Audio filter stage.
     expect(result.differenceEnergyRatio).toBeLessThan(0.3);
+  });
+
+  it('preserves noise energy at the loop boundary instead of inserting a quiet fade', () => {
+    for (const seed of ['winter', 'qa-snow:ambience:air-high', 'quiet-eaves']) {
+      const samples = generateWindLoop(seed, 16000 * 9);
+      const body = stats(samples.subarray(1024, -1024));
+      const tail = stats(samples.subarray(-1024));
+      const bodyDifferenceEnergy = body.rms ** 2 * body.differenceEnergyRatio;
+      const tailDifferenceEnergy = tail.rms ** 2 * tail.differenceEnergyRatio;
+      // The removed Hermite tail had ~0.00006 of the normal difference energy:
+      // a high-pass filter consequently turned that part of each loop silent.
+      expect(tailDifferenceEnergy / bodyDifferenceEnergy).toBeGreaterThan(0.4);
+      expect(tailDifferenceEnergy / bodyDifferenceEnergy).toBeLessThan(1.8);
+    }
   });
 
   it('keeps timber events sparse and free of clipped values or seam impulses', () => {
@@ -49,6 +66,7 @@ describe('generated ambience samples', () => {
     expect(result.peak).toBeLessThan(0.6);
     expect(result.rms).toBeGreaterThan(0.001);
     expect(result.rms).toBeLessThan(0.08);
+    expect(Math.abs(result.mean)).toBeLessThan(1e-6);
     expect(samples[0]).toBe(0);
     expect(samples.at(-1)).toBe(0);
     expect(samples.filter((sample) => sample === 0).length / samples.length).toBeGreaterThan(0.75);

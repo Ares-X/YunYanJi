@@ -6,37 +6,30 @@ export function generateWindLoop(seed: string, frames: number): Float32Array {
     throw new RangeError('A wind loop needs at least 128 samples.');
   }
 
-  const random = createRandom(`${seed}:wind`);
   const samples = new Float32Array(frames);
+  const slowPole = 0.982;
+  const fastPole = 0.88;
   let slow = 0;
   let fast = 0;
-  // Two correlated, low-pass noise bands produce a soft continuous air bed.
+
+  // Solve each one-pole filter's periodic starting state. A zero-state pass
+  // gives end = a^N * start + drivenEnd, so start = drivenEnd / (1 - a^N).
+  // Replaying the seeded excitation from that state preserves stationary noise
+  // through the wrap; no quiet interpolation/fade segment replaces the tail.
+  const warmup = createRandom(`${seed}:wind`);
+  for (let index = 0; index < frames; index += 1) {
+    const white = warmup() * 2 - 1;
+    slow = slowPole * slow + (1 - slowPole) * white;
+    fast = fastPole * fast + (1 - fastPole) * white;
+  }
+  slow /= 1 - slowPole ** frames;
+  fast /= 1 - fastPole ** frames;
+  const random = createRandom(`${seed}:wind`);
   for (let index = 0; index < frames; index += 1) {
     const white = random() * 2 - 1;
-    slow += (white - slow) * 0.018;
-    fast += (white - fast) * 0.12;
+    slow = slowPole * slow + (1 - slowPole) * white;
+    fast = fastPole * fast + (1 - fastPole) * white;
     samples[index] = slow * 0.72 + fast * 0.28;
-  }
-
-  // A short smooth bridge joins the tail to the head, including its slope.
-  // This avoids the pop made by simply looping an unrelated last sample.
-  const bridge = Math.min(1024, Math.floor(frames / 8));
-  const start = frames - bridge;
-  const from = samples[start] ?? 0;
-  const fromSlope = from - (samples[start - 1] ?? from);
-  const to = samples[0] ?? 0;
-  const toSlope = (samples[1] ?? to) - to;
-  for (let index = 0; index < bridge; index += 1) {
-    const t = index / (bridge - 1);
-    const t2 = t * t;
-    const t3 = t2 * t;
-    // Limit tangents so a long bridge cannot introduce a large low-frequency swell.
-    const tangentScale = Math.min(12, bridge - 1);
-    samples[start + index] =
-      (2 * t3 - 3 * t2 + 1) * from +
-      (t3 - 2 * t2 + t) * fromSlope * tangentScale +
-      (-2 * t3 + 3 * t2) * to +
-      (t3 - t2) * toSlope * tangentScale;
   }
 
   // Remove DC before peak normalization. Both endpoints receive the same transform.
@@ -56,11 +49,11 @@ export function generateWindLoop(seed: string, frames: number): Float32Array {
   return samples;
 }
 
-/** Quiet, sparse, damped resonances: a wooden eave settling in the wind. */
+/** Quiet friction-driven resonances: a wooden eave settling in the wind. */
 export function generateTimberLoop(
   seed: string,
   sampleRate: number,
-  duration = 13,
+  duration = 31.31,
 ): Float32Array {
   if (!Number.isFinite(sampleRate) || sampleRate < 8000 || !Number.isFinite(duration) || duration < 1) {
     throw new RangeError('Timber synthesis requires a valid sample rate and duration.');
@@ -68,26 +61,50 @@ export function generateTimberLoop(
   const random = createRandom(`${seed}:timber`);
   const frames = Math.floor(sampleRate * duration);
   const samples = new Float32Array(frames);
-  const events = Math.max(1, Math.floor(duration / 3.6));
-  for (let event = 0; event < events; event += 1) {
-    const eventTime = 0.3 + ((event + random() * 0.55) / events) * (duration - 1.15);
+  let eventTime = Math.min(duration * 0.2, 0.35 + random() * 0.65);
+  while (eventTime < duration - 0.15) {
     const start = Math.floor(eventTime * sampleRate);
-    const length = Math.floor((0.34 + random() * 0.28) * sampleRate);
-    const fundamental = 84 + random() * 62;
-    const phase = random() * Math.PI * 2;
-    for (let index = 0; index < length && start + index < frames - 1; index += 1) {
-      const time = index / sampleRate;
-      const progress = index / length;
-      const attack = Math.min(1, time / 0.045);
-      const envelope = attack * Math.exp(-7 * progress) * Math.pow(1 - progress, 2);
-      const bend = fundamental * time + 3.2 * time * time;
-      const resonance =
-        Math.sin(2 * Math.PI * bend + phase) * 0.48 +
-        Math.sin(2 * Math.PI * bend * 1.93 + phase) * 0.2 +
-        Math.sin(2 * Math.PI * bend * 3.17) * 0.08;
-      const friction = (random() * 2 - 1) * 0.025;
-      samples[start + index] = (samples[start + index] ?? 0) + (resonance + friction) * envelope;
+    const length = Math.min(Math.floor((0.3 + random() * 0.35) * sampleRate), frames - start - 1);
+    const fundamental = 92 + random() * 74;
+    const frequencies = [fundamental, fundamental * (2.13 + random() * 0.2), fundamental * (3.47 + random() * 0.3)];
+    const modes = frequencies.map((frequency, index) => {
+      const radius = Math.exp(-1 / (sampleRate * (0.013 + random() * 0.014)));
+      return { feedback: 2 * radius * Math.cos(2 * Math.PI * frequency / sampleRate), damping: radius * radius, input: 1 - radius, weight: [0.54, 0.28, 0.12][index] ?? 0, previous: 0, older: 0 };
+    });
+    const event = new Float32Array(length);
+    const envelope = new Float32Array(length);
+    let friction = 0;
+    let sum = 0;
+    let envelopeSum = 0;
+    for (let index = 0; index < length; index += 1) {
+      const progress = index / Math.max(1, length - 1);
+      const window = Math.sin(Math.PI * progress) ** 2 * Math.exp(-2.8 * progress);
+      friction += ((random() * 2 - 1) - friction) * 0.16;
+      let resonance = 0;
+      for (const mode of modes) {
+        const value = mode.input * friction + mode.feedback * mode.previous - mode.damping * mode.older;
+        mode.older = mode.previous;
+        mode.previous = value;
+        resonance += value * mode.weight;
+      }
+      event[index] = resonance * window;
+      envelope[index] = window;
+      sum += event[index] ?? 0;
+      envelopeSum += window;
     }
+    // Remove event DC inside its own window, keeping the intervening silence.
+    const offset = envelopeSum > 0 ? sum / envelopeSum : 0;
+    for (let index = 0; index < length; index += 1) {
+      samples[start + index] = (event[index] ?? 0) - offset * (envelope[index] ?? 0);
+    }
+    // Uneven intervals replace the old evenly spaced three-event pattern.
+    eventTime += 2.4 + random() * 4.8;
+  }
+  let peak = 0;
+  for (const sample of samples) peak = Math.max(peak, Math.abs(sample));
+  if (peak > 0) {
+    const scale = 0.42 / peak;
+    for (let index = 0; index < samples.length; index += 1) samples[index] = (samples[index] ?? 0) * scale;
   }
   return samples;
 }

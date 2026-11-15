@@ -1,11 +1,13 @@
 import {
   BoxGeometry, BufferGeometry, CatmullRomCurve3, CircleGeometry, CylinderGeometry,
-  ExtrudeGeometry, Float32BufferAttribute, Group, IcosahedronGeometry, Mesh,
-  MeshStandardMaterial, Path, PlaneGeometry, PointLight, Shape, SphereGeometry,
+  ExtrudeGeometry, Float32BufferAttribute, Group, Mesh,
+  MeshStandardMaterial, Path, PlaneGeometry, PointLight, Shape,
   TorusGeometry, TubeGeometry, Vector3,
 } from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { createRandom, randomBetween } from '../../core/random';
+import { createRockPair, createRoundedSlab, groundHeight } from './refinedGeometry';
+import { mergeStaticMeshes } from './mergeStaticMeshes';
 
 export interface CourtyardMaterials {
   snow: MeshStandardMaterial;
@@ -38,7 +40,7 @@ function box(parent: Group, material: MeshStandardMaterial, size: [number, numbe
 }
 
 function rod(parent: Group, material: MeshStandardMaterial, start: Vector3, end: Vector3, radius: number): Mesh {
-  const result = mesh(new CylinderGeometry(radius * 0.91, radius, start.distanceTo(end), 8), material, parent);
+  const result = mesh(new CylinderGeometry(radius * 0.91, radius, start.distanceTo(end), 14), material, parent);
   result.position.copy(start).add(end).multiplyScalar(0.5);
   result.quaternion.setFromUnitVectors(UP, end.clone().sub(start).normalize());
   return result;
@@ -52,15 +54,18 @@ function roofY(x: number, z: number, width: number, depth: number, ridge: number
 }
 
 function roofSurface(width: number, depth: number, ridge: number, snow: boolean): BufferGeometry {
-  const columns = 48;
-  const rows = 24;
+  const columns = Math.max(40, Math.ceil(width / 0.17));
+  const rows = Math.max(16, Math.ceil(depth / 0.16));
   const vertices: number[] = [];
   const indices: number[] = [];
   for (let iz = 0; iz <= rows; iz += 1) {
     for (let ix = 0; ix <= columns; ix += 1) {
       const x = (ix / columns - 0.5) * width;
       const z = (iz / rows - 0.5) * depth;
-      const blanket = snow ? 0.09 + 0.018 * Math.sin(x * 2.1 + z * 1.7) : 0;
+      const edge = Math.abs(z) / (depth * 0.5);
+      const broadDrift = Math.sin(x * 0.83 + z * 1.1) * 0.022 + Math.sin(x * 1.71 - z * 0.65) * 0.011;
+      const edgeRoll = Math.max(0, (edge - 0.83) / 0.17);
+      const blanket = snow ? 0.105 + broadDrift + Math.sin(x * 4.6 + z * 3.2) * 0.004 - edgeRoll * edgeRoll * 0.035 : 0;
       vertices.push(x, roofY(x, z, width, depth, ridge) + blanket, z);
     }
   }
@@ -71,6 +76,34 @@ function roofSurface(width: number, depth: number, ridge: number, snow: boolean)
       const c = a + columns + 1;
       const d = c + 1;
       indices.push(a, c, b, b, c, d);
+    }
+  }
+  if (snow) {
+    // Give the blanket a rounded, descending eave rather than a floating sheet.
+    for (const side of [-1, 1]) {
+      const row = side < 0 ? 0 : rows;
+      const midStart = vertices.length / 3;
+      for (let ix = 0; ix <= columns; ix += 1) {
+        const topIndex = (row * (columns + 1) + ix) * 3;
+        const x = vertices[topIndex]!;
+        const z = vertices[topIndex + 2]!;
+        vertices.push(x, vertices[topIndex + 1]! - 0.025, z + side * 0.020);
+      }
+      const lowerStart = vertices.length / 3;
+      for (let ix = 0; ix <= columns; ix += 1) {
+        const topIndex = (row * (columns + 1) + ix) * 3;
+        const x = vertices[topIndex]!;
+        const z = vertices[topIndex + 2]!;
+        vertices.push(x, roofY(x, z, width, depth, ridge) + 0.012, z + side * 0.006);
+      }
+      for (let ix = 0; ix < columns; ix += 1) {
+        for (let segment = 0; segment < 2; segment += 1) {
+          const top = segment === 0 ? row * (columns + 1) + ix : midStart + ix;
+          const bottom = segment === 0 ? midStart + ix : lowerStart + ix;
+          if (side > 0) indices.push(top, bottom, top + 1, top + 1, bottom, bottom + 1);
+          else indices.push(top, top + 1, bottom, top + 1, bottom + 1, bottom);
+        }
+      }
     }
   }
   const result = new BufferGeometry();
@@ -103,7 +136,7 @@ function buildRoof(parent: Group, materials: CourtyardMaterials, x: number, z: n
     for (let i = 0; i < count; i += 1) {
       const rx = -width * 0.5 + (i + 0.5) * width / count;
       const rz = side * depth * 0.5;
-      const cap = new CylinderGeometry(0.102, 0.108, 0.19, 8);
+      const cap = new CylinderGeometry(0.102, 0.108, 0.19, 16);
       cap.rotateX(Math.PI / 2);
       cap.translate(rx, roofY(rx, rz, width, depth, ridge) - 0.02, rz + side * 0.025);
       caps.push(cap);
@@ -171,10 +204,10 @@ function buildHall(parent: Group, m: CourtyardMaterials): void {
 }
 
 /** A tapered, curved branch with rings oriented along its centreline. */
-function taperedBranch(points: Vector3[], radius: number, endRadius: number): BufferGeometry {
+function taperedBranch(points: Vector3[], radius: number, endRadius: number, detailed = false): BufferGeometry {
   const path = new CatmullRomCurve3(points);
-  const segments = 9;
-  const sides = radius > 0.08 ? 7 : 5;
+  const segments = detailed ? (radius > 0.08 ? 22 : 13) : 9;
+  const sides = detailed ? (radius > 0.14 ? 18 : radius > 0.05 ? 12 : 8) : (radius > 0.08 ? 9 : 6);
   const frames = path.computeFrenetFrames(segments, false);
   const vertices: number[] = [];
   const indices: number[] = [];
@@ -183,7 +216,7 @@ function taperedBranch(points: Vector3[], radius: number, endRadius: number): Bu
     const centre = path.getPointAt(t);
     const n = frames.normals[ring]!;
     const b = frames.binormals[ring]!;
-    const r = radius + (endRadius - radius) * t;
+    const r = (radius + (endRadius - radius) * t) * (1 + 0.09 * (1 - t) ** 6);
     for (let side = 0; side <= sides; side += 1) {
       const angle = side / sides * Math.PI * 2;
       const v = centre.clone().addScaledVector(n, Math.cos(angle) * r).addScaledVector(b, Math.sin(angle) * r);
@@ -204,22 +237,23 @@ function taperedBranch(points: Vector3[], radius: number, endRadius: number): Bu
   return result;
 }
 
-function buildTree(seed: string, m: CourtyardMaterials): Group {
+function buildTree(seed: string, m: CourtyardMaterials, detailed = false): Group {
   const random = createRandom(`${seed}/tree`);
   const tree = new Group();
   const woodParts: BufferGeometry[] = [];
   const snowParts: BufferGeometry[] = [];
-  const grow = (start: Vector3, direction: Vector3, length: number, radius: number, depth: number): void => {
+  const grow = (start: Vector3, direction: Vector3, length: number, radius: number, depth: number, parentDirection = direction): void => {
     const end = start.clone().addScaledVector(direction, length);
     const bend = new Vector3(randomBetween(random, -0.23, 0.23), randomBetween(random, 0.0, 0.18), randomBetween(random, -0.24, 0.24));
-    const middle = start.clone().lerp(end, 0.51).add(bend);
-    woodParts.push(taperedBranch([start, middle, end], radius, radius * 0.46));
+    const entrance = start.clone().addScaledVector(parentDirection, length * 0.18);
+    const middle = start.clone().lerp(end, 0.64).add(bend);
+    woodParts.push(taperedBranch([start, entrance, middle, end], radius, radius * 0.46, detailed));
     if (radius > 0.045 && Math.abs(direction.y) < 0.88) {
       const up = new Vector3(0, radius * 0.70, 0);
       const snowStart = start.clone().lerp(middle, 0.14).add(up);
       const snowMiddle = middle.clone().add(up);
       const snowEnd = middle.clone().lerp(end, 0.87).addScaledVector(up, 0.6);
-      snowParts.push(taperedBranch([snowStart, snowMiddle, snowEnd], radius * 0.65, radius * 0.27));
+      snowParts.push(taperedBranch([snowStart, snowMiddle, snowEnd], radius * 0.65, radius * 0.27, detailed));
     }
     if (depth === 0) return;
     const count = depth > 2 ? 3 : 2;
@@ -227,7 +261,7 @@ function buildTree(seed: string, m: CourtyardMaterials): Group {
       const theta = (i / count) * Math.PI * 2 + random() * 1.9;
       const outward = new Vector3(Math.cos(theta), randomBetween(random, 0.22, 0.74), Math.sin(theta));
       const next = direction.clone().multiplyScalar(0.58).addScaledVector(outward, 0.85).normalize();
-      grow(end, next, length * randomBetween(random, 0.56, 0.75), radius * 0.52, depth - 1);
+      grow(end, next, length * randomBetween(random, 0.56, 0.75), radius * 0.52, depth - 1, direction);
     }
   };
   grow(new Vector3(0, 0.0, 0), new Vector3(-0.12, 0.97, -0.12).normalize(), 2.6, 0.25, 4);
@@ -244,20 +278,14 @@ function buildRocks(parent: Group, seed: string, m: CourtyardMaterials): void {
   const stoneParts: BufferGeometry[] = [];
   const snowParts: BufferGeometry[] = [];
   const addRock = (x: number, z: number, sx: number, height: number, sz: number): void => {
-    const rock = new IcosahedronGeometry(1, 1);
-    const position = rock.getAttribute('position');
-    for (let i = 0; i < position.count; i += 1) {
-      const factor = 0.93 + random() * 0.14;
-      position.setXYZ(i, position.getX(i) * factor, position.getY(i) * factor, position.getZ(i) * factor);
-    }
-    rock.computeVertexNormals();
-    rock.scale(sx, height, sz);
-    rock.rotateY(random() * Math.PI);
-    rock.translate(x, height * 0.35, z);
+    const { rock, snow } = createRockPair(sx, height, sz, random() * Math.PI * 2);
+    const rotation = random() * Math.PI;
+    const base = groundHeight(x, z) + height * 0.13;
+    rock.rotateY(rotation);
+    rock.translate(x, base, z);
     stoneParts.push(rock);
-    const snow = new SphereGeometry(1, 12, 5, 0, Math.PI * 2, 0, Math.PI * 0.48);
-    snow.scale(sx * 0.89, height * 0.56, sz * 0.89);
-    snow.translate(x, height * 0.72, z);
+    snow.rotateY(rotation);
+    snow.translate(x, base, z);
     snowParts.push(snow);
   };
   for (let i = 0; i < 22; i += 1) {
@@ -283,14 +311,26 @@ function buildPath(parent: Group, seed: string, m: CourtyardMaterials): void {
     const z = 7.3 - t * 14.4;
     const x = 1.5 + Math.sin(t * Math.PI) * 2.2;
     const width = randomBetween(random, 1.06, 1.42);
-    const slab = box(parent, m.stone, [width, 0.14, 0.83], [x, 0.13, z]);
+    const phase = random() * Math.PI * 2;
+    const surface = groundHeight(x, z);
+    // Half of the slab lies below the snow surface; only its worn upper rim is
+    // exposed, avoiding the previous row of thick blocks sitting above ground.
+    const slab = mesh(createRoundedSlab(width, 0.13, 0.83, phase), m.stone, parent);
+    slab.position.set(x, surface + 0.005, z);
     slab.rotation.y = randomBetween(random, -0.11, 0.11);
-    const cap = box(parent, m.snow, [width * 0.91, 0.035, 0.73], [x - 0.02, 0.214, z]);
+    const cap = mesh(createRoundedSlab(width * 0.93, 0.025, 0.76, phase, 0.012), m.snow, parent);
+    cap.position.set(x - 0.01, surface + 0.077, z);
     cap.rotation.y = slab.rotation.y;
   }
   for (let i = 0; i < 3; i += 1) {
-    box(parent, m.stone, [2.95, 0.15 + i * 0.10, 0.55], [3, 0.09 + i * 0.05, -6.5 - i * 0.44]);
-    box(parent, m.snow, [2.89, 0.035, 0.48], [3, 0.18 + i * 0.10, -6.5 - i * 0.44]);
+    const phase = random() * Math.PI * 2;
+    const height = 0.18 + i * 0.10;
+    const top = 0.13 + i * 0.10;
+    const z = -6.5 - i * 0.44;
+    const step = mesh(createRoundedSlab(2.95, height, 0.59, phase, 0.035), m.stone, parent);
+    step.position.set(3, top - height * 0.5, z);
+    const snow = mesh(createRoundedSlab(2.88, 0.028, 0.53, phase, 0.013), m.snow, parent);
+    snow.position.set(3, top + 0.009, z);
   }
 }
 
@@ -385,8 +425,7 @@ export function buildCourtyard(seed: string, m: CourtyardMaterials): CourtyardGe
   for (let i = 0; i < vertices.count; i += 1) {
     const x = vertices.getX(i);
     const z = vertices.getZ(i);
-    const height = 0.014 + Math.sin(x * 0.42 + z * 0.19) * 0.028 + Math.sin(x * 0.89 - z * 0.51) * 0.018;
-    vertices.setY(i, height);
+    vertices.setY(i, groundHeight(x, z));
   }
   ground.computeVertexNormals();
   const groundMesh = mesh(ground, m.snow, group);
@@ -398,7 +437,7 @@ export function buildCourtyard(seed: string, m: CourtyardMaterials): CourtyardGe
   buildLantern(group, m);
   buildReeds(group, seed);
   buildDistance(group, seed, m);
-  const tree = buildTree(seed, m);
+  const tree = buildTree(seed, m, true);
   // Place the main tree beside the pond, leaving the stepping-stone path and
   // moon gate clear from the authored eye-level camera.
   tree.position.set(-4.45, 0, -3.6);
@@ -410,5 +449,6 @@ export function buildCourtyard(seed: string, m: CourtyardMaterials): CourtyardGe
   water.scale.set(2.43, 1.62, 1);
   water.position.set(-1.25, 0.075, 0.9);
   water.castShadow = false;
+  group.userData.staticBatchStats = mergeStaticMeshes(group, new Set([tree, water]));
   return { group, tree, water };
 }

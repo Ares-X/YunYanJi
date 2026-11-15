@@ -7,6 +7,7 @@ import type { WebGLCubeRenderTarget } from 'three';
 import type { EnvironmentSnapshot, QualityLevel } from '../core/types';
 import type { PoemScene } from '../scenes/types';
 import { createProceduralSky } from './ProceduralSky';
+import { GroundContactShadows } from './GroundContactShadows';
 import { drawingSize, QUALITY } from './quality';
 
 export class WorldRenderer {
@@ -14,7 +15,8 @@ export class WorldRenderer {
   readonly scene = new Scene();
   readonly camera = new PerspectiveCamera(40, 1, 0.2, 120);
   private readonly sky = createProceduralSky();
-  private readonly sun = new DirectionalLight('#fff1dd', 2.2);
+  private readonly sun = new DirectionalLight('#fff0dd', 1.9);
+  private readonly contacts = new GroundContactShadows();
   private environment: WebGLCubeRenderTarget | undefined;
   private quality: QualityLevel;
   private readonly offset = new Vector2();
@@ -28,12 +30,12 @@ export class WorldRenderer {
     this.renderer = new WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance', alpha: false });
     this.renderer.outputColorSpace = SRGBColorSpace;
     this.renderer.toneMapping = ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.12;
+    this.renderer.toneMappingExposure = 1.03;
     this.renderer.shadowMap.type = PCFShadowMap;
     this.scene.background = new Color('#b7c5cc');
     this.scene.fog = new FogExp2('#b7c5cc', 0.022);
-    this.scene.environmentIntensity = 0.45;
-    this.scene.add(new HemisphereLight('#d7e8f2', '#717b78', 1.2));
+    this.scene.environmentIntensity = 0.62;
+    this.scene.add(new HemisphereLight('#d7e8f2', '#667771', 0.9));
     this.sun.position.set(-8, 15, 7);
     this.sun.target.position.set(0, 0, -2);
     Object.assign(this.sun.shadow.camera, { left: -17, right: 17, top: 17, bottom: -17, near: 0.5, far: 55 });
@@ -59,6 +61,7 @@ export class WorldRenderer {
     this.scene.environment = this.environment.texture;
     generator.dispose();
     this.scene.add(this.sky.mesh);
+    this.contacts.bake(this.renderer, this.scene);
   }
 
   resize(width: number, height: number, dpr = window.devicePixelRatio): void {
@@ -112,6 +115,7 @@ export class WorldRenderer {
   diagnostics() {
     return { quality: this.quality, viewX: this.goal.x, viewY: this.goal.y, calls: this.renderer.info.render.calls, triangles: this.renderer.info.render.triangles,
       geometries: this.renderer.info.memory.geometries, textures: this.renderer.info.memory.textures,
+      contactBakes: this.contacts.bakes, contactResolution: this.contacts.resolution,
       drawingWidth: this.canvas.width, drawingHeight: this.canvas.height };
   }
 
@@ -119,6 +123,7 @@ export class WorldRenderer {
     this.poem.dispose();
     this.sky.dispose();
     this.environment?.dispose();
+    this.contacts.dispose();
     this.sun.shadow.map?.dispose();
     this.sun.dispose();
     this.scene.clear();

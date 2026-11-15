@@ -1,7 +1,24 @@
-import { MeshStandardMaterial, Vector3 } from 'three';
+import { MeshStandardMaterial, Vector3, Vector4 } from 'three';
+import type { Material, Texture } from 'three';
 import { createRandom, hashSeed } from '../../core/random';
 
 export type ProceduralMaterialKind = 'snow' | 'stone' | 'wood' | 'plaster' | 'tile';
+
+interface ContactBinding {
+  texture: { value: Texture | null };
+  bounds: { value: Vector4 };
+  enabled: { value: number };
+}
+const contactBindings = new WeakMap<Material, ContactBinding>();
+
+/** The renderer owns the generated field; materials only sample its live handle. */
+export function setContactShadowField(material: Material, texture: Texture, bounds: Vector4): void {
+  const binding = contactBindings.get(material);
+  if (!binding) return;
+  binding.texture.value = texture;
+  binding.bounds.value.copy(bounds);
+  binding.enabled.value = 1;
+}
 
 const PALETTES: Record<ProceduralMaterialKind, { color: number; roughness: number }> = {
   snow: { color: 0xe7eeee, roughness: 0.89 },
@@ -15,6 +32,9 @@ const PALETTES: Record<ProceduralMaterialKind, { color: number; roughness: numbe
 const NOISE = /* glsl */ `
 varying vec3 vYyjWorldPosition;
 uniform vec3 uYyjSeedOffset;
+uniform sampler2D uYyjContactMap;
+uniform vec4 uYyjContactBounds;
+uniform float uYyjContactEnabled;
 
 float yyjHash(vec3 p) {
   p = fract(p * 0.1031);
@@ -59,9 +79,10 @@ const SURFACES: Record<ProceduralMaterialKind, string> = {
     float yyjMottle = yyjFbm(yyjP * 2.4);
     float yyjFine = mix(0.5, yyjNoise(yyjP * 43.0), yyjDetailFade);
     float yyjSeam = smoothstep(0.46, 0.50, yyjMottle) * (1.0 - smoothstep(0.50, 0.54, yyjMottle));
-    diffuseColor.rgb *= 0.76 + yyjMottle * 0.40 + yyjFine * 0.07 - yyjSeam * 0.045;
+    float yyjDamp = 1.0 - smoothstep(0.06, 0.38, vYyjWorldPosition.y);
+    diffuseColor.rgb *= (0.76 + yyjMottle * 0.40 + yyjFine * 0.07 - yyjSeam * 0.045) * (1.0 - yyjDamp * 0.16);
     yyjHeight = (yyjMottle - 0.5) * 0.021 + (yyjFine - 0.5) * 0.003;
-    yyjRoughness = (yyjMottle - 0.5) * 0.16;
+    yyjRoughness = (yyjMottle - 0.5) * 0.16 - yyjDamp * 0.18;
   `,
   wood: /* glsl */ `
     float yyjWoodWarp = yyjFbm(yyjP * vec3(1.6, 0.32, 1.6));
@@ -104,9 +125,16 @@ export function createProceduralMaterial(kind: ProceduralMaterialKind, seed: str
   material.name = `procedural-${kind}`;
   const random = createRandom(`${seed}/material/${kind}`);
   const offset = new Vector3(random() * 83, random() * 83, random() * 83);
+  const contact: ContactBinding = {
+    texture: { value: null }, bounds: { value: new Vector4(0, 0, 1, 1) }, enabled: { value: 0 },
+  };
+  contactBindings.set(material, contact);
 
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uYyjSeedOffset = { value: offset };
+    shader.uniforms.uYyjContactMap = contact.texture;
+    shader.uniforms.uYyjContactBounds = contact.bounds;
+    shader.uniforms.uYyjContactEnabled = contact.enabled;
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\nvarying vec3 vYyjWorldPosition;')
       .replace('#include <worldpos_vertex>', /* glsl */ `
@@ -136,6 +164,17 @@ export function createProceduralMaterial(kind: ProceduralMaterialKind, seed: str
         #include <roughnessmap_fragment>
         roughnessFactor = clamp(roughnessFactor + yyjRoughness, 0.38, 1.0);
       `)
+      .replace('#include <aomap_fragment>', /* glsl */ `
+        #include <aomap_fragment>
+        vec2 yyjContactUv = (vYyjWorldPosition.xz - uYyjContactBounds.xy) / uYyjContactBounds.zw;
+        float yyjInside = step(0.0, yyjContactUv.x) * step(yyjContactUv.x, 1.0)
+          * step(0.0, yyjContactUv.y) * step(yyjContactUv.y, 1.0);
+        float yyjGround = 1.0 - smoothstep(0.10, 0.85, vYyjWorldPosition.y);
+        float yyjContact = texture2D(uYyjContactMap, clamp(yyjContactUv, 0.0, 1.0)).r;
+        float yyjAmbient = 1.0 - yyjContact * yyjGround * yyjInside * uYyjContactEnabled * 0.72;
+        reflectedLight.indirectDiffuse *= yyjAmbient;
+        reflectedLight.indirectSpecular *= yyjAmbient;
+      `)
       .replace('#include <normal_fragment_maps>', /* glsl */ `
         #include <normal_fragment_maps>
         // Screen-space surface gradient: no UV seams or normal-map lookup.
@@ -153,6 +192,6 @@ export function createProceduralMaterial(kind: ProceduralMaterialKind, seed: str
   };
 
   // Each source variation has its own key; no patch depends on mutable globals.
-  material.customProgramCacheKey = () => `yyj-surface-v1/${kind}/${hashSeed(seed)}`;
+  material.customProgramCacheKey = () => `yyj-surface-v2/${kind}/${hashSeed(seed)}`;
   return material;
 }

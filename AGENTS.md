@@ -26,6 +26,8 @@
 
 - Run `npm run check` and `npm run test:browser` before handing off changes.
 - Browser checks must include desktop and mobile screenshots, meaningful interaction, asset/network checks and lifecycle behavior. Inspect actual renders, not only DOM text.
+- Use `npm run capture` locally for visual iterations; do not push commits merely to obtain CI screenshots. Finish a coherent batch locally, then push it for the final quality gate.
+- Draft PRs skip CI browser checks; ready PRs retain them. A local screenshot command is not a replacement for the complete browser tests before handoff.
 - Performance claims must name hardware/browser and whether the renderer is software-backed. A software-rendered CI run cannot establish real device FPS.
 - Keep screenshots/test traces out of shipped assets. Do not commit `dist` or generated media into the source tree.
 - Do not introduce a license or change the repository's license without the owner's decision.

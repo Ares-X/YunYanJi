@@ -17,6 +17,8 @@ test('renders a procedural scene, supports interaction and releases its resource
   expect((await state(page)).audioContext).toBe('uninitialized');
   expect(Number((await state(page)).triangles)).toBeGreaterThan(1000);
   expect(Number((await state(page)).calls)).toBeGreaterThan(1);
+  expect(Number((await state(page)).calls)).toBeLessThan(80);
+  expect((await state(page)).contactBakes).toBe(1);
   await page.getByRole('button', { name: '暂停', exact: true }).click();
   const frozen = (await state(page)).elapsed;
   await page.waitForTimeout(250);
@@ -68,6 +70,7 @@ test('renders a procedural scene, supports interaction and releases its resource
   await page.getByRole('combobox', { name: '画质', exact: true }).selectOption('low');
   expect((await state(page)).quality).toBe('low');
   expect((await state(page)).geometries).toBe(beforeQuality.geometries);
+  expect((await state(page)).contactBakes).toBe(beforeQuality.contactBakes);
   await page.getByLabel('雪量', { exact: true }).press('Home');
   // Two native keyboard increments exercise the control without queuing twenty
   // redundant WebGL redraws on a software-only runner.
@@ -88,14 +91,19 @@ test('renders a procedural scene, supports interaction and releases its resource
   await page.evaluate(() => window.__YUNYANJI__!.dispose());
   await expect.poll(async () => (await state(page)).audioContext).toBe('closed');
   expect((await state(page)).disposed).toBe(true);
+  expect((await state(page)).geometries).toBe(0);
 });
 
 test('starts still for reduced motion and recovers from WebGL context loss', async ({ page }, testInfo) => {
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.goto('/?debug=1&seed=qa-snow');
   await expect(page.locator('#app')).toHaveAttribute('data-ready', 'true');
   expect((await state(page)).paused).toBe(true);
   expect((await state(page)).elapsed).toBe(0);
+  const contactBakes = Number((await state(page)).contactBakes);
   const supported = await page.evaluate(() => {
     const gl = document.querySelector('canvas')!.getContext('webgl2');
     const extension = gl?.getExtension('WEBGL_lose_context');
@@ -108,6 +116,8 @@ test('starts still for reduced motion and recovers from WebGL context loss', asy
   await expect(page.locator('#app')).toHaveAttribute('data-context', 'ready', { timeout: 30_000 });
   expect((await state(page)).contextLost).toBe(false);
   expect((await state(page)).paused).toBe(true);
+  expect(Number((await state(page)).contactBakes)).toBe(contactBakes + 1);
   await page.screenshot({ path: testInfo.outputPath('restored.png') });
   await testInfo.attach('restored', { path: testInfo.outputPath('restored.png'), contentType: 'image/png' });
+  expect(errors).toEqual([]);
 });

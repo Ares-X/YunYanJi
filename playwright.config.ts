@@ -1,7 +1,10 @@
 import { defineConfig, devices } from '@playwright/test';
+import { chromiumLaunchOptions } from './scripts/browser-options.ts';
 
 export default defineConfig({
   testDir: './tests/browser',
+  // Keep screenshot iteration history when Playwright clears its own outputs.
+  outputDir: 'test-results/browser',
   // Software rendering in hosted CI makes the full interaction sequence slower.
   // Keep individual actions bounded while allowing the complete flow to finish.
   timeout: 120_000,
@@ -15,10 +18,7 @@ export default defineConfig({
     actionTimeout: 15_000,
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
-    launchOptions: {
-      args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--disable-dev-shm-usage'],
-      ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}),
-    },
+    launchOptions: chromiumLaunchOptions(),
   },
   projects: [
     { name: 'desktop', use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 900 } } },
